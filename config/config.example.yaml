@@ -5,7 +5,7 @@
 # ${VAR} / ${VAR:-default} are replaced with environment variables (see .env).
 
 general:
-  timezone: America/Vancouver       # axis labels and daily-total boundaries
+  timezone: America/Vancouver       # axis labels, daily-total boundaries, local times shown next to Z times
   poll_interval_minutes: 5          # how often to look for new model runs
   data_dir: /data                   # mounted volume (state, extracted runs, PNGs)
   download_workers: 6               # parallel downloads/decodes
@@ -89,6 +89,7 @@ charts:
     title: "Whistler — 10-day Meteogram ({fl_models})"
     subtitle: "Freezing Level · Precipitation"
     hours: 240
+    trim_to_data: true               # end the chart where the model data ends (no empty space on the right)
     freezing_level:
       - { model: hrdps, point: whistler_peak, until_hour: 48 }
       - { model: gdps, point: whistler_peak, offset: [-1, -1] }
@@ -103,7 +104,8 @@ charts:
     show_wetbulb_zero: true          # dashed snow-level estimate
     precip_bar_hours: 6
     precip_total_hours: 24
-    precip_total_start_hour_local: 5
+    precip_total_start_hour_local: 0   # local hour the boxed totals start (default 0 = midnight;
+                                       # snapped to the nearest model output step, e.g. 3 h for GDPS)
     reference_lines:
       - { elevation: 1500, label: "" }
     # webhook: ${DISCORD_WEBHOOK_LONGTERM}   # per-chart webhook (optional)
@@ -112,4 +114,5 @@ charts:
     style:
       elevation_max_m: 4000
       # precip_axis_max_mm: 20
-      # tick_hour_local: 5
+      # tick_hour_local: 0     # local hour of the daily x-axis marker (default 0 = midnight)
+      # min_ticks_per_day: 4   # at least this many markers per day, 1-11 (1 = daily, 4 = every 6 h, 7-11 = every 2-3 h)

@@ -74,12 +74,17 @@ precipitation:            # optional; defaults to the freezing_level sources
 Other per-chart options:
 
 - `hours` and `history_hours`: chart length, and how much past time to keep.
+- `trim_to_data`: end the chart where the model data ends instead of at `hours`, so a GDPS run that is a few hours old doesn't leave empty space on the right.
 - `freezing_level_method`: `highest` (the top of any warm layer, above which everything is frozen) or `lowest`.
 - `show_wetbulb_zero`: draws the dashed snow-level estimate.
-- Precipitation: `precip_bar_hours`, `precip_total_hours` and `precip_total_start_hour_local` (boxed totals).
+- Precipitation: `precip_bar_hours`, `precip_total_hours` and `precip_total_start_hour_local` (boxed totals, default 0 = local midnight). Bars and totals are aligned to that local hour, snapped to the nearest output step of the precip models (3-hourly GDPS can't start exactly at every hour).
 - `wind`: `enabled`, `elevation_m`, `every_hours`, and which layer's sources to use.
 - `reference_lines`: horizontal elevation markers.
-- `style`: size, axis limits, colours, footer, model-transition marker, now line and tick hour.
+- `style`: size, axis limits, colours, footer, model-transition marker and now line.
+  - `tick_hour_local`: local hour of the daily x-axis marker (default 0 = midnight).
+  - `min_ticks_per_day`: minimum number of x-axis markers per day, 1–11 (default 1). The step is the largest of 24/12/8/6/4/3/2 h that gives at least that many, so 4 means every 6 h and 7–11 mean every 2–3 h.
+
+Times on the chart are in `general.timezone`, which is printed under the x axis. Model run times (footer and Discord message) are shown in UTC with the local time in brackets, e.g. `2026-11-06 00Z (Thu05 5pm MST)`.
 - Discord: `webhook` (per chart, otherwise `discord.default_webhook`), `message` (text sent with the image, e.g. `@here`) and `min_post_interval_minutes`.
 
 Titles can use `{fl_models}` and `{precip_models}`, e.g. `"Whistler — 10-day ({fl_models})"` becomes `HRDPS→GDPS`.

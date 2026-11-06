@@ -113,7 +113,8 @@ class StyleConfig(Strict):
     show_model_transitions: bool = True
     show_footer: bool = True
     show_now_line: bool = True
-    tick_hour_local: int = Field(5, ge=0, le=23)
+    tick_hour_local: int = Field(0, ge=0, le=23)          # local hour of the daily x-axis marker
+    min_ticks_per_day: int = Field(1, ge=1, le=11)        # 1 = daily ... 7-11 = every 2-3 h
     freezing_level_color: str = "#a3232b"
     wetbulb_color: str = "#3a6fb0"
     precip_color: str = "#5aa65a"
@@ -130,6 +131,7 @@ class ChartConfig(Strict):
     message: str = ""                          # optional text posted with the image
     hours: int = Field(240, gt=0)              # maximum chart length from start
     history_hours: int = Field(0, ge=0)        # hours before "now" to keep on the chart
+    trim_to_data: bool = False                 # end the chart where the model data ends
     freezing_level: list[SourceConfig]
     precipitation: Optional[list[SourceConfig]] = None   # None = same as freezing_level
     freezing_level_method: Literal["highest", "lowest"] = "highest"
@@ -137,7 +139,7 @@ class ChartConfig(Strict):
     show_wetbulb_zero: bool = True
     precip_bar_hours: int = Field(6, ge=1, le=24)
     precip_total_hours: int = Field(24, ge=1, le=72)
-    precip_total_start_hour_local: int = Field(5, ge=0, le=23)
+    precip_total_start_hour_local: int = Field(0, ge=0, le=23)
     wind: WindConfig = WindConfig()
     reference_lines: list[ReferenceLineConfig] = []
     style: StyleConfig = StyleConfig()

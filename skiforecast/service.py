@@ -7,9 +7,10 @@ import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from .assemble import build_chart_data
-from .chart import render_chart
+from .chart import format_zulu_local, render_chart
 from .config import AppConfig, ChartConfig
 from .datamart import Datamart, RunIncomplete, compute_needs, parse_run_id, run_id
 from .discord import Discord
@@ -124,8 +125,9 @@ class Service:
         new_bits = [f"{self.cfg.resolved_models[m].label} {runs[m]['run'][9:12]}"
                     for m in models if runs.get(m) and old.get(m) != runs[m]["run"]]
         lines = [f"**Updated:** {', '.join(new_bits)}" if new_bits else ""]
+        tz = ZoneInfo(self.cfg.general.timezone)
         for s in data.sources:
-            lines.append(f"{s.role}: {s.model_label} {s.run:%d %b %HZ} ({s.hours})")
+            lines.append(f"{s.role}: {s.model_label} {format_zulu_local(s.run, tz, '%d %b %HZ')} ({s.hours})")
         ok = self.discord.post_chart(self.cfg.webhook_for(chart), path, data.title,
                                      "\n".join(l for l in lines if l), chart.message)
         cs.update(signature=signature, rendered=str(path), posted_at=now.isoformat(), posted=ok)

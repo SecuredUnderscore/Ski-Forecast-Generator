@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pathlib
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import matplotlib
@@ -27,24 +27,58 @@ def _fmt_mm(mm: float) -> str:
     return f"{mm:.0f}"
 
 
-def _day_ticks(start: datetime, end: datetime, tz: ZoneInfo, hour: int) -> list[datetime]:
-    local = start.astimezone(tz)
-    day = local.replace(hour=hour, minute=0, second=0, microsecond=0)
-    if day < local:
-        day += timedelta(days=1)
-    ticks = []
-    while day <= end.astimezone(tz):
-        ticks.append(day)
-        # step by calendar day in local time (handles DST)
-        nxt = (day + timedelta(days=1, hours=2)).replace(hour=hour)
-        day = nxt
-    return ticks
+_TICK_STEPS = (24, 12, 8, 6, 4, 3, 2)   # hours; each divides a day evenly
+
+
+def _tick_step(min_per_day: int) -> int:
+    """Largest even step giving at least ``min_per_day`` ticks per day (2 h at most)."""
+    return next((h for h in _TICK_STEPS if 24 // h >= min_per_day), _TICK_STEPS[-1])
+
+
+def _time_ticks(start: datetime, end: datetime, tz: ZoneInfo, hour: int,
+                step: int) -> tuple[list[datetime], list[datetime]]:
+    """Day ticks at the local ``hour`` plus intra-day ticks every ``step`` hours of
+    local wall-clock time (so DST changes don't shift them)."""
+    days, within = [], []
+    d = start.astimezone(tz).date() - timedelta(days=1)
+    while True:
+        anchor = datetime.combine(d, time(hour))
+        if anchor.replace(tzinfo=tz) > end:
+            break
+        for k in range(24 // step):
+            t = (anchor + timedelta(hours=k * step)).replace(tzinfo=tz)
+            if start <= t <= end:
+                (within if k else days).append(t)
+        d += timedelta(days=1)
+    return days, within
+
+
+def _hour_label(t: datetime) -> str:
+    h = t.hour % 12 or 12
+    ampm = "am" if t.hour < 12 else "pm"
+    mins = f":{t.minute:02d}" if t.minute else ""
+    return f"{h}{mins}{ampm}"
 
 
 def _tick_label(t: datetime) -> str:
-    h = t.hour % 12 or 12
-    ampm = "am" if t.hour < 12 else "pm"
-    return f"{t.strftime('%a')}{t.day:02d}\n{h}{ampm}"
+    return f"{t.strftime('%a')}{t.day:02d}\n{_hour_label(t)}"
+
+
+def format_zulu_local(t: datetime, tz: ZoneInfo, zulu_fmt: str = "%Y-%m-%d %HZ") -> str:
+    """UTC time with the local time in brackets, e.g. "2026-11-06 00Z (Thu05 4pm PST)"."""
+    loc = t.astimezone(tz)
+    return f"{t.astimezone(ZoneInfo('UTC')):{zulu_fmt}} ({loc:%a}{loc.day:02d} {_hour_label(loc)} {loc:%Z})"
+
+
+def _tz_note(start: datetime, end: datetime, tz: ZoneInfo, name: str) -> str:
+    """e.g. "Local time: America/Vancouver (PST, UTC-8)" or "(PDT→PST, UTC-7→-8)"."""
+    zs = list(dict.fromkeys((t.astimezone(tz).strftime("%Z"), t.astimezone(tz).utcoffset()) for t in (start, end)))
+
+    def off(td):
+        m = int(td.total_seconds() // 60)
+        return f"{'+' if m >= 0 else '-'}{abs(m) // 60}" + (f":{abs(m) % 60:02d}" if m % 60 else "")
+    return (f"Local time: {name} ({'→'.join(z for z, _ in zs)}, "
+            f"UTC{'→'.join(off(o) for _, o in zs)})")
 
 
 def render_chart(data: ChartData, out_path: str | pathlib.Path) -> pathlib.Path:
@@ -56,7 +90,7 @@ def render_chart(data: ChartData, out_path: str | pathlib.Path) -> pathlib.Path:
     plt.rcParams["font.family"] = st.font_family
     fig = plt.figure(figsize=(st.width_in, st.height_in), dpi=st.dpi, facecolor=st.background_color)
     try:
-        bottom = 0.16 if st.show_footer else 0.09
+        bottom = 0.17 if st.show_footer else 0.10
         ax = fig.add_axes([0.14, bottom, 0.73, 0.90 - bottom])
         ax.set_facecolor(st.background_color)
         ax2 = ax.twinx()
@@ -185,9 +219,15 @@ def render_chart(data: ChartData, out_path: str | pathlib.Path) -> pathlib.Path:
         ax.tick_params(axis="both", labelsize=11)
         ax.grid(True, axis="x", color="white", linewidth=1.0, alpha=0.9)
         ax.grid(True, axis="y", color="white", linewidth=0.6, alpha=0.6)
-        ticks = _day_ticks(data.start, data.end, tz, st.tick_hour_local)
-        ax.set_xticks(mdates.date2num(ticks))
-        ax.set_xticklabels([_tick_label(t) for t in ticks])
+        days, within = _time_ticks(data.start, data.end, tz, st.tick_hour_local, _tick_step(st.min_ticks_per_day))
+        ax.set_xticks(mdates.date2num(days))
+        ax.set_xticklabels([_tick_label(t) for t in days])
+        if within:
+            ax.set_xticks(mdates.date2num(within), minor=True)
+            ax.set_xticklabels([_hour_label(t) for t in within], minor=True)
+            ax.tick_params(axis="x", which="minor", labelsize=8.5, labelcolor="#444444", length=3)
+            ax.grid(True, axis="x", which="minor", color="white", linewidth=0.6, alpha=0.6)
+        ax.set_xlabel(_tz_note(data.start, data.end, tz, data.timezone), fontsize=9, color="#555555", labelpad=4)
         for side in ("top", "left", "bottom"):
             ax.spines[side].set_color("#555555")
         ax2.spines["top"].set_visible(False)
@@ -209,11 +249,10 @@ def render_chart(data: ChartData, out_path: str | pathlib.Path) -> pathlib.Path:
             lines = []
             for s in data.sources:
                 elev = "?" if s.grid_elevation_m is None else f"{s.grid_elevation_m:.0f}"
-                lines.append(f"{s.role}: {s.model_label} {s.run:%Y-%m-%d %HZ} · {s.point_label} "
+                lines.append(f"{s.role}: {s.model_label} {format_zulu_local(s.run, tz)} · {s.point_label} "
                              f"({s.grid_lat:.3f}, {s.grid_lon:.3f}, model elev {elev} m) · {s.hours}")
-            gen = data.generated.astimezone(tz)
-            lines.append(f"Generated {gen:%Y-%m-%d %H:%M %Z}")
-            fig.text(0.14, bottom - 0.075, "\n".join(lines), ha="left", va="top", fontsize=8,
+            lines.append(f"Generated {format_zulu_local(data.generated, tz, '%Y-%m-%d %H:%MZ')}")
+            fig.text(0.14, bottom - 0.085, "\n".join(lines), ha="left", va="top", fontsize=8,
                      color="#555555", linespacing=1.4)
 
         fig.savefig(out_path, dpi=st.dpi, facecolor=st.background_color)

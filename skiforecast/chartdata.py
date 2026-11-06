@@ -84,7 +84,8 @@ class ChartStyle:
     show_model_transitions: bool = True
     show_footer: bool = True
     show_now_line: bool = True
-    tick_hour_local: int = 5                      # day ticks at this local hour
+    tick_hour_local: int = 0                      # day ticks at this local hour
+    min_ticks_per_day: int = 1                    # extra ticks within the day (step divides 24 h)
     freezing_level_color: str = "#a3232b"
     wetbulb_color: str = "#3a6fb0"
     precip_color: str = "#5aa65a"

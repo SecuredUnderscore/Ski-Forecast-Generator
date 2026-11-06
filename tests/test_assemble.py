@@ -86,3 +86,17 @@ def test_no_data_renders(tmp_path):
     for chart in cfg.charts:
         d = build_chart_data(cfg, chart, {})
         render_chart(d, tmp_path / f"{chart.id}.png")
+
+
+def test_trim_to_data_and_midnight_totals(tmp_path):
+    cfg = make_cfg(tmp_path)
+    chart = next(c for c in cfg.charts if c.id == "low_2day").model_copy(update={"hours": 72})
+    now = datetime(2026, 11, 6, 4, 30, tzinfo=UTC)
+    runs = {"hrdps": fake_run("hrdps", datetime(2026, 11, 6, 0, tzinfo=UTC), 48, 3, 1, ["whistler_village@0,0"])}
+    d = build_chart_data(cfg, chart, runs, now)
+    assert d.end == now.replace(minute=0) + timedelta(hours=72)
+    d = build_chart_data(cfg, chart.model_copy(update={"trim_to_data": True}), runs, now)
+    assert d.end == datetime(2026, 11, 8, 0, tzinfo=UTC)
+    # Vancouver is UTC-7 from Nov 2026: local midnight = 07Z
+    assert all(t.start.hour == 7 for t in d.precip_totals)
+    assert all((b.start.hour - 7) % 3 == 0 for b in d.precip_bars)

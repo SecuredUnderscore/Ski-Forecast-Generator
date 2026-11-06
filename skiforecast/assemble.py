@@ -126,7 +126,8 @@ def build_chart_data(cfg: AppConfig, chart: ChartConfig, runs: dict[str, dict],
     bar_h = chart.precip_bar_hours
     p_windows = plan_windows(cfg, chart.precip_sources, runs, "precip", start, end)
     bars: list[PrecipBar] = []
-    b0 = _floor(start, bar_h)
+    origin = _period_origin(cfg, chart, start, tz)
+    b0 = origin + (start - origin) // timedelta(hours=bar_h) * timedelta(hours=bar_h)
     while b0 < end:
         b1 = b0 + timedelta(hours=bar_h)
         for idx, w in enumerate(p_windows):
@@ -140,8 +141,6 @@ def build_chart_data(cfg: AppConfig, chart: ChartConfig, runs: dict[str, dict],
         b0 = b1
     for w in p_windows:
         add_source("Precipitation", w)
-
-    totals = _totals(chart, bars, start, end, tz)
 
     # ---------------------------------------------------------------- wind
     wind: list[WindSample] = []
@@ -161,6 +160,13 @@ def build_chart_data(cfg: AppConfig, chart: ChartConfig, runs: dict[str, dict],
                                                  d["surface_pressure_hpa"][k])
                 if spd is not None:
                     wind.append(WindSample(t, spd, dirn, w.source.model))
+
+    if chart.trim_to_data:
+        data_end = max([s.times[-1] for s in fl_segments] + [b.end for b in bars]
+                       + [w.time for w in wind], default=None)
+        if data_end is not None and data_end > start:
+            end = min(end, data_end)
+    totals = _totals(chart, bars, origin, start, end)
 
     fl_models = "→".join(dict.fromkeys(s.model_label for s in fl_segments)) or "no data"
     pr_models = "→".join(dict.fromkeys(b.model_label for b in bars)) or "no data"
@@ -199,17 +205,25 @@ def _accum_between(w: Window, b0: datetime, b1: datetime) -> Optional[float]:
     return max(0.0, a1 - a0)
 
 
-def _totals(chart: ChartConfig, bars: list[PrecipBar], start, end, tz: str) -> list[PrecipTotal]:
+def _period_origin(cfg: AppConfig, chart: ChartConfig, start: datetime, tz: str) -> datetime:
+    """UTC start of the precipitation period at or before ``start``: the configured local hour,
+    snapped to the nearest output step of the chart's precip models so bars line up with the data
+    (e.g. 3-hourly GDPS can't start a bar at 08Z, so local midnight in PST becomes 09Z)."""
+    local = start.astimezone(ZoneInfo(tz)).replace(hour=chart.precip_total_start_hour_local, minute=0,
+                                                   second=0, microsecond=0)
+    if local > start:
+        local -= timedelta(days=1)
+    step = max((cfg.resolved_models[s.model].precip_step_hours for s in chart.precip_sources
+                if s.model in cfg.resolved_models), default=1)
+    return _floor(local.astimezone(UTC) + timedelta(hours=step / 2), step)
+
+
+def _totals(chart: ChartConfig, bars: list[PrecipBar], origin, start, end) -> list[PrecipTotal]:
     if not bars:
         return []
-    zone = ZoneInfo(tz)
     bar_h, tot_h = chart.precip_bar_hours, chart.precip_total_hours
-    # local period start, snapped to the nearest bar edge
-    local = start.astimezone(zone).replace(hour=chart.precip_total_start_hour_local, minute=0,
-                                           second=0, microsecond=0) - timedelta(days=1)
-    p0 = local.astimezone(UTC)
-    snapped = _floor(p0 + timedelta(hours=bar_h / 2), bar_h)
-    p0 = snapped
+    period = timedelta(hours=tot_h)
+    p0 = origin + (start - origin) // period * period
     by_start = {b.start: b for b in bars}
     out = []
     while p0 < end:
