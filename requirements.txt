@@ -1,0 +1,6 @@
+eccodes>=2.38
+numpy>=1.26
+matplotlib>=3.8
+pydantic>=2.6
+PyYAML>=6.0
+requests>=2.31

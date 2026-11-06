@@ -1,0 +1,27 @@
+services:
+  skiforecast:
+    build: .
+    image: ski-forecast-generator:latest
+    container_name: skiforecast
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TZ: ${TZ:-America/Vancouver}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./config:/config:ro
+      - ./data:/data
+    command: ["run"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "skiforecast", "healthcheck"]
+      interval: 5m
+      timeout: 30s
+      start_period: 2h      # first start processes several model runs
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,7 @@
+.env
+data/
+config/config.yaml
+__pycache__/
+*.pyc
+.pytest_cache/
+sample_chart.png

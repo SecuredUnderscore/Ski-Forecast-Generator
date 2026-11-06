@@ -1,0 +1,115 @@
+# Ski Forecast Generator configuration
+# Copy to config/config.yaml and edit.  Validate with:
+#   docker compose run --rm skiforecast check-config
+#
+# ${VAR} / ${VAR:-default} are replaced with environment variables (see .env).
+
+general:
+  timezone: America/Vancouver       # axis labels and daily-total boundaries
+  poll_interval_minutes: 5          # how often to look for new model runs
+  data_dir: /data                   # mounted volume (state, extracted runs, PNGs)
+  download_workers: 6               # parallel downloads/decodes
+  profile_top_hpa: 600              # download pressure levels from the surface up to this level (~4.2 km)
+  keep_runs: 3                      # processed runs kept per model
+  keep_charts: 20                   # rendered PNGs kept per chart
+  post_on_startup: true             # post every chart on first start even if nothing changed
+
+discord:
+  enabled: true
+  default_webhook: ${DISCORD_WEBHOOK_DEFAULT}   # used by charts without their own webhook
+  alerts_webhook: ${DISCORD_WEBHOOK_ALERTS:-}   # errors, stale models, start-up notice (optional)
+  username: Ski Forecast
+  startup_message: true
+  alert_repeat_hours: 6
+
+# Named locations.  Each chart source picks a point and can shift it by whole
+# grid cells with `offset: [east, north]`, e.g. [-1, -1] = one cell left, one down
+# (same idea as moving tiles on SpotWX).  Run `check-config`, then look at the
+# chart footer: it prints the grid cell's coordinates and the model's ground
+# elevation so you can pick the cell whose elevation suits you.
+points:
+  whistler_peak:
+    label: Whistler Peak
+    lat: 50.0592
+    lon: -122.9486
+    elevation_m: 2182
+  whistler_village:
+    label: Whistler Village
+    lat: 50.1163
+    lon: -122.9574
+    elevation_m: 675
+
+# Built-in models: hrdps, hrdps_west, rdps, gdps.  Override any field here, e.g.
+#   models:
+#     hrdps:
+#       profile_step_hours: 1     # hourly upper-air data (default 3; ~3x the download)
+#     gdps:
+#       enabled: true
+# A completely new Datamart model can be added by giving every field
+# (see skiforecast/models.py for the format).
+models: {}
+
+charts:
+  # ---------------------------------------------------------------- 2-day, low elevation
+  - id: low_2day
+    title: "Whistler Village — 2-day ({fl_models})"
+    subtitle: "Freezing Level · Precipitation"
+    hours: 48
+    # Sources are used in order; if HRDPS-West has no data yet, HRDPS fills in.
+    freezing_level:
+      - { model: hrdps_west, point: whistler_village }
+      - { model: hrdps, point: whistler_village }
+    # precipitation: omitted -> same sources as freezing_level
+    precip_bar_hours: 3
+    precip_total_hours: 24
+    reference_lines:
+      - { elevation: 675, label: Village }
+      - { elevation: 1850, label: Roundhouse }
+    style:
+      elevation_max_m: 3500
+
+  # ---------------------------------------------------------------- 2-day, high elevation
+  - id: high_2day
+    title: "Whistler Peak — 2-day ({fl_models})"
+    hours: 48
+    freezing_level:
+      - { model: hrdps_west, point: whistler_peak }
+      - { model: hrdps, point: whistler_peak }
+    precip_bar_hours: 3
+    wind:
+      enabled: true
+      elevation_m: 2200
+      every_hours: 3
+    reference_lines:
+      - { elevation: 1850, label: Roundhouse }
+      - { elevation: 2182, label: Peak }
+
+  # ---------------------------------------------------------------- 10-day
+  - id: long_term
+    title: "Whistler — 10-day Meteogram ({fl_models})"
+    subtitle: "Freezing Level · Precipitation"
+    hours: 240
+    freezing_level:
+      - { model: hrdps, point: whistler_peak, until_hour: 48 }
+      - { model: gdps, point: whistler_peak, offset: [-1, -1] }
+    precipitation:
+      - { model: hrdps, point: whistler_peak, until_hour: 48 }
+      - { model: gdps, point: whistler_peak, offset: [-1, -1] }
+    # Example: GDPS freezing level for the whole chart instead:
+    # freezing_level:
+    #   - { model: gdps, point: whistler_peak, offset: [-1, -1] }
+    freezing_level_method: highest   # highest | lowest 0 °C crossing
+    below_ground: extrapolate        # extrapolate | clamp | hide  (freezing level under the model terrain)
+    show_wetbulb_zero: true          # dashed snow-level estimate
+    precip_bar_hours: 6
+    precip_total_hours: 24
+    precip_total_start_hour_local: 5
+    reference_lines:
+      - { elevation: 1500, label: "" }
+    # webhook: ${DISCORD_WEBHOOK_LONGTERM}   # per-chart webhook (optional)
+    # message: "@here new 10-day"           # text posted with the image
+    # min_post_interval_minutes: 60         # throttle posts
+    style:
+      elevation_max_m: 4000
+      # precip_axis_max_mm: 20
+      # tick_hour_local: 5
