@@ -139,7 +139,7 @@ class ChartConfig(Strict):
     show_wetbulb_zero: bool = True
     precip_bar_hours: int = Field(6, ge=1, le=24)
     precip_total_hours: int = Field(24, ge=1, le=72)
-    precip_total_start_hour_local: int = Field(0, ge=0, le=23)
+    precip_total_start_hour_local: Optional[int] = Field(None, ge=0, le=23)  # None = style.tick_hour_utc, else local midnight
     wind: WindConfig = WindConfig()
     reference_lines: list[ReferenceLineConfig] = []
     style: StyleConfig = StyleConfig()

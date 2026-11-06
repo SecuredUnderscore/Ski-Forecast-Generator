@@ -104,8 +104,8 @@ charts:
     show_wetbulb_zero: true          # dashed snow-level estimate
     precip_bar_hours: 6
     precip_total_hours: 24
-    precip_total_start_hour_local: 0   # local hour the boxed totals start (default 0 = midnight;
-                                       # snapped to the nearest model output step, e.g. 3 h for GDPS)
+    # precip_total_start_hour_local: 5   # local hour the boxed totals start (default: style.tick_hour_utc,
+                                         # else local midnight; snapped to the model output step, e.g. 3 h for GDPS)
     reference_lines:
       - { elevation: 1500, label: "" }
     # webhook: ${DISCORD_WEBHOOK_LONGTERM}   # per-chart webhook (optional)

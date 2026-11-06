@@ -100,3 +100,7 @@ def test_trim_to_data_and_midnight_totals(tmp_path):
     # Vancouver is UTC-7 from Nov 2026: local midnight = 07Z
     assert all(t.start.hour == 7 for t in d.precip_totals)
     assert all((b.start.hour - 7) % 3 == 0 for b in d.precip_bars)
+    # totals follow the Zulu day marker when one is set
+    chart.style = chart.style.model_copy(update={"tick_hour_utc": 12})
+    d = build_chart_data(cfg, chart, runs, now)
+    assert d.precip_totals and all(t.start.hour == 12 for t in d.precip_totals)

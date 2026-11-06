@@ -77,7 +77,7 @@ Other per-chart options:
 - `trim_to_data`: end the chart where the model data ends instead of at `hours`, so a GDPS run that is a few hours old doesn't leave empty space on the right.
 - `freezing_level_method`: `highest` (the top of any warm layer, above which everything is frozen) or `lowest`.
 - `show_wetbulb_zero`: draws the dashed snow-level estimate.
-- Precipitation: `precip_bar_hours`, `precip_total_hours` and `precip_total_start_hour_local` (boxed totals, default 0 = local midnight). Bars and totals are aligned to that local hour, snapped to the nearest output step of the precip models (3-hourly GDPS can't start exactly at every hour).
+- Precipitation: `precip_bar_hours`, `precip_total_hours` and `precip_total_start_hour_local` (boxed totals; local hour). By default the totals start at the x-axis day marker: `style.tick_hour_utc` if set, otherwise local midnight. Bars and totals are aligned to that hour, snapped to the nearest output step of the precip models (3-hourly GDPS can't start exactly at every hour).
 - `wind`: `enabled`, `elevation_m`, `every_hours`, and which layer's sources to use.
 - `reference_lines`: horizontal elevation markers.
 - `style`: size, axis limits, colours, footer, model-transition marker and now line.
