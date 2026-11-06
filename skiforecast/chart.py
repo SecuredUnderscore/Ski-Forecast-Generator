@@ -143,10 +143,12 @@ def render_chart(data: ChartData, out_path: str | pathlib.Path) -> pathlib.Path:
         # --- boxed totals
         box_y = 0.40
         for tot in data.precip_totals:
-            cx = (mdates.date2num(tot.start) + mdates.date2num(tot.end)) / 2
+            # drawn at the end of its period (a period running past the chart sits on the right edge)
+            cx = min(mdates.date2num(tot.end), x1)
             if not (x0 <= cx <= x1):
                 continue
-            ax.text(cx, box_y, _fmt_mm(tot.mm), transform=ax.get_xaxis_transform(), ha="center",
+            ha = "right" if cx >= x1 else "center"   # keep a box on the right edge inside the plot
+            ax.text(cx, box_y, _fmt_mm(tot.mm), transform=ax.get_xaxis_transform(), ha=ha,
                     va="center", fontsize=12, fontweight="bold", color=st.precip_text_color, zorder=6,
                     bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85,
                               edgecolor=st.precip_text_color,
