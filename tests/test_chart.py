@@ -89,6 +89,9 @@ def test_time_ticks():
     from skiforecast.chart import _tick_step, _time_ticks, format_zulu_local
     assert [_tick_step(n) for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 11)] == [24, 12, 8, 6, 4, 4, 3, 3, 2, 2]
     tz = ZoneInfo(TZ)
-    days, within = _time_ticks(START, START + timedelta(hours=48), tz, 0, 6)
+    days, within = _time_ticks(START, START + timedelta(hours=48), tz, None, 6)
     assert [t.hour for t in days] == [0, 0] and {t.hour for t in within} == {6, 12, 18}
+    days, within = _time_ticks(START, START + timedelta(hours=48), tz, 12, 6)
+    assert [t.astimezone(UTC).hour for t in days] == [12, 12] and days[0].tzinfo == tz
+    assert {t.astimezone(UTC).hour for t in within} == {18, 0, 6}
     assert format_zulu_local(datetime(2026, 11, 6, 0, tzinfo=UTC), tz) == "2026-11-06 00Z (Thu05 5pm MST)"

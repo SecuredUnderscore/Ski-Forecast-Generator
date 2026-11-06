@@ -114,5 +114,5 @@ charts:
     style:
       elevation_max_m: 4000
       # precip_axis_max_mm: 20
-      # tick_hour_local: 0     # local hour of the daily x-axis marker (default 0 = midnight)
+      # tick_hour_utc: 12      # UTC hour of the daily x-axis marker (default: local midnight); labels stay in local time
       # min_ticks_per_day: 4   # at least this many markers per day, 1-11 (1 = daily, 4 = every 6 h, 7-11 = every 2-3 h)

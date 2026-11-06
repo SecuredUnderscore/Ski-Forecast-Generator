@@ -113,7 +113,7 @@ class StyleConfig(Strict):
     show_model_transitions: bool = True
     show_footer: bool = True
     show_now_line: bool = True
-    tick_hour_local: int = Field(0, ge=0, le=23)          # local hour of the daily x-axis marker
+    tick_hour_utc: Optional[int] = Field(None, ge=0, le=23)  # UTC hour of the daily x-axis marker (None = local midnight)
     min_ticks_per_day: int = Field(1, ge=1, le=11)        # 1 = daily ... 7-11 = every 2-3 h
     freezing_level_color: str = "#a3232b"
     wetbulb_color: str = "#3a6fb0"

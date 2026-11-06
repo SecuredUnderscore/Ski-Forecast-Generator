@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pathlib
 from datetime import datetime, time, timedelta
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 import matplotlib
@@ -35,20 +36,23 @@ def _tick_step(min_per_day: int) -> int:
     return next((h for h in _TICK_STEPS if 24 // h >= min_per_day), _TICK_STEPS[-1])
 
 
-def _time_ticks(start: datetime, end: datetime, tz: ZoneInfo, hour: int,
+def _time_ticks(start: datetime, end: datetime, tz: ZoneInfo, hour_utc: Optional[int],
                 step: int) -> tuple[list[datetime], list[datetime]]:
-    """Day ticks at the local ``hour`` plus intra-day ticks every ``step`` hours of
-    local wall-clock time (so DST changes don't shift them)."""
+    """Day ticks at ``hour_utc`` (or local midnight if None) plus intra-day ticks every
+    ``step`` hours.  Local-midnight ticks follow wall-clock time, so DST changes don't
+    shift them.  Returned as local datetimes for labelling."""
+    anchor_tz = tz if hour_utc is None else ZoneInfo("UTC")
+    hour = hour_utc or 0
     days, within = [], []
-    d = start.astimezone(tz).date() - timedelta(days=1)
+    d = start.astimezone(anchor_tz).date() - timedelta(days=1)
     while True:
         anchor = datetime.combine(d, time(hour))
-        if anchor.replace(tzinfo=tz) > end:
+        if anchor.replace(tzinfo=anchor_tz) > end:
             break
         for k in range(24 // step):
-            t = (anchor + timedelta(hours=k * step)).replace(tzinfo=tz)
+            t = (anchor + timedelta(hours=k * step)).replace(tzinfo=anchor_tz)
             if start <= t <= end:
-                (within if k else days).append(t)
+                (within if k else days).append(t.astimezone(tz))
         d += timedelta(days=1)
     return days, within
 
@@ -219,7 +223,7 @@ def render_chart(data: ChartData, out_path: str | pathlib.Path) -> pathlib.Path:
         ax.tick_params(axis="both", labelsize=11)
         ax.grid(True, axis="x", color="white", linewidth=1.0, alpha=0.9)
         ax.grid(True, axis="y", color="white", linewidth=0.6, alpha=0.6)
-        days, within = _time_ticks(data.start, data.end, tz, st.tick_hour_local, _tick_step(st.min_ticks_per_day))
+        days, within = _time_ticks(data.start, data.end, tz, st.tick_hour_utc, _tick_step(st.min_ticks_per_day))
         ax.set_xticks(mdates.date2num(days))
         ax.set_xticklabels([_tick_label(t) for t in days])
         if within:

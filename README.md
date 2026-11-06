@@ -81,7 +81,7 @@ Other per-chart options:
 - `wind`: `enabled`, `elevation_m`, `every_hours`, and which layer's sources to use.
 - `reference_lines`: horizontal elevation markers.
 - `style`: size, axis limits, colours, footer, model-transition marker and now line.
-  - `tick_hour_local`: local hour of the daily x-axis marker (default 0 = midnight).
+  - `tick_hour_utc`: Zulu hour of the daily x-axis marker, e.g. `12` for 12Z. Leave it unset for local midnight (the default). Marker labels are always in local time.
   - `min_ticks_per_day`: minimum number of x-axis markers per day, 1–11 (default 1). The step is the largest of 24/12/8/6/4/3/2 h that gives at least that many, so 4 means every 6 h and 7–11 mean every 2–3 h.
 
 Times on the chart are in `general.timezone`, which is printed under the x axis. Model run times (footer and Discord message) are shown in UTC with the local time in brackets, e.g. `2026-11-06 00Z (Thu05 5pm MST)`.
