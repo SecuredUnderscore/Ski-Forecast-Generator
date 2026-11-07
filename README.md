@@ -117,7 +117,8 @@ A second chart type (`type: blended_snow`) that answers "how much snow, and how 
 ```yaml
 - id: snow_2day
   type: blended_snow
-  title: "Whistler — Blended Snow Forecast ({models})"
+  title: "Whistler"
+  subtitle: "Blended Snow Forecast · 2-day ({models})"
   hours: 48
   sources:
     - { model: hrdps, point: whistler_peak }

@@ -229,9 +229,12 @@ def _draw_elevation_panel(ax, axr, panel, data, x0, x1):
 
     # totals
     for tot in panel.totals:
-        cx = (mdates.date2num(tot.start) + mdates.date2num(tot.end)) / 2
+        # drawn at the end of its period, like the meteogram (a period running past the
+        # chart sits right-aligned on the right edge)
+        cx = min(mdates.date2num(tot.end), x1)
         if not (x0 <= cx <= x1):
             continue
+        ha = "right" if cx >= x1 else "center"
         ls = "-" if tot.complete else "--"
         sc, slo, shi = _num(tot.snow_cm), _num(tot.snow_lo), _num(tot.snow_hi)
         rc, rlo, rhi = _num(tot.rain_mm), _num(tot.rain_lo), _num(tot.rain_hi)
@@ -239,12 +242,12 @@ def _draw_elevation_panel(ax, axr, panel, data, x0, x1):
         show_rain = (math.isfinite(rc) and rc >= 1) or (math.isfinite(rhi) and rhi >= 2)
         if show_snow:
             ax.text(cx, 0.90, f"{_whole(sc)} cm ({_whole(slo)}–{_whole(shi)})", transform=ax.get_xaxis_transform(),
-                    ha="center", va="center", fontsize=9.5, fontweight="bold", color=st.snow_text_color, zorder=7,
+                    ha=ha, va="center", fontsize=9.5, fontweight="bold", color=st.snow_text_color, zorder=7,
                     bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.9, edgecolor=st.snow_text_color,
                               linestyle=ls, linewidth=1.1))
         if show_rain:   # a dry period shows no box at all; rain alone takes the top slot
             ax.text(cx, 0.72 if show_snow else 0.90, f"{_whole(rc)} mm ({_whole(rlo)}–{_whole(rhi)})",
-                    transform=ax.get_xaxis_transform(), ha="center", va="center", fontsize=9,
+                    transform=ax.get_xaxis_transform(), ha=ha, va="center", fontsize=9,
                     fontweight="bold", color=st.rain_text_color, zorder=7,
                     bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.9,
                               edgecolor=st.rain_text_color, linestyle=ls, linewidth=1.1))

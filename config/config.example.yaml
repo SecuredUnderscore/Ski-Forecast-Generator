@@ -128,7 +128,8 @@ charts:
   # trained, so it is a disagreement measure, not a calibrated confidence interval.
   - id: snow_2day
     type: blended_snow
-    title: "Whistler — Blended Snow Forecast ({models})"
+    title: "Whistler"
+    subtitle: "Blended Snow Forecast · 2-day ({models})"
     hours: 48
     trim_to_data: true
     sources:                         # same chain idea as the meteogram: profile + precipitation per model
