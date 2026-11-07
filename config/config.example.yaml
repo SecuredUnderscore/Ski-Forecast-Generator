@@ -116,3 +116,41 @@ charts:
       # precip_axis_max_mm: 20
       tick_hour_utc: 12        # UTC hour of the daily x-axis marker (default: local midnight); labels stay in local time
       # min_ticks_per_day: 4   # at least this many markers per day, 1-11 (1 = daily, 4 = every 6 h, 7-11 = every 2-3 h)
+    # When to post.  Default: whenever any model the chart uses has a new run.
+    # post:
+    #   models: [hrdps]              # only new HRDPS runs trigger a post (GDPS is still used for the data)
+    #   times: ["06:00", "17:00"]    # or: post on a local-time schedule instead of on model updates
+
+  # ---------------------------------------------------------------- Blended Snow Forecast, 2-day
+  # Stacked panels, one per elevation, with snow (cm) and rain (mm) per 3 h slot and a
+  # spread (margin of error).  The spread comes from the model's recent runs, the grid
+  # cells around the point and fixed perturbations of the snow physics; nothing is
+  # trained, so it is a disagreement measure, not a calibrated confidence interval.
+  - id: snow_2day
+    type: blended_snow
+    title: "Whistler — Blended Snow Forecast ({models})"
+    hours: 48
+    trim_to_data: true
+    sources:                         # same chain idea as the meteogram: profile + precipitation per model
+      - { model: hrdps, point: whistler_peak }
+    elevations:                      # 1-5 entries, each gets a panel (numbers or {elevation, label})
+      - { elevation: 2182, label: Peak }
+      - { elevation: 1850, label: Roundhouse }
+      - { elevation: 675, label: Village }
+    bar_hours: 3
+    total_hours: 24
+    # blend:                         # defaults shown; usually nothing to change
+    #   lagged_runs: 3               # recent runs of each model to blend (needs general.keep_runs >= this)
+    #   neighbourhood_km: 6          # radius of grid cells around the point (0 = centre cell only)
+    #   temperature_sigma_c: 1.0     # +/- wet-bulb perturbation for the rain/snow decision
+    #   ratio_spread: 0.3            # +/- fraction on the snow-to-liquid ratio
+    #   widen: 1.5                   # ensembles are under-dispersive; the raw spread is multiplied by this
+    #   use_wind: false              # lower the ratio in strong wind (downloads the wind files too)
+    #   snow_level_offset_m: 150     # snow reaches this far below the wet-bulb 0 °C height (more in heavy precip)
+    post:
+      models: [hrdps]                # one post per new HRDPS run
+    style:
+      tick_hour_utc: 12
+      min_ticks_per_day: 2
+      # show_bar_ranges: true        # also print "low–high" under each bar value
+      # show_slot_separators: false # drop the thin lines between slots (default: on)

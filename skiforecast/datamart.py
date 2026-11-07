@@ -20,7 +20,7 @@ from typing import Callable, Optional
 
 import requests
 
-from .config import AppConfig, ModelConfig
+from .config import AppConfig, ModelConfig, SnowChartConfig, SourceConfig
 from . import grib
 
 log = logging.getLogger(__name__)
@@ -78,6 +78,7 @@ class PointReq:
     lat: float
     lon: float
     offset: tuple[int, int]
+    radius_km: float = 0.0   # neighbourhood radius to extract around the cell (0 = centre only)
 
 
 @dataclass
@@ -91,7 +92,8 @@ class ModelNeeds:
     max_hour: int = 0
 
     def signature(self) -> str:
-        return json.dumps({"points": sorted(self.points), "roles": sorted(self.profile_roles),
+        points = sorted([k, float(p.radius_km)] for k, p in self.points.items())
+        return json.dumps({"points": points, "roles": sorted(self.profile_roles),
                            "profile": self.need_profile, "precip": self.need_precip,
                            "max_hour": self.max_hour}, sort_keys=True)
 
@@ -100,17 +102,37 @@ def point_key(point: str, offset) -> str:
     return f"{point}@{offset[0]},{offset[1]}"
 
 
+def _add_point(cfg: AppConfig, n: ModelNeeds, s: SourceConfig, radius_km: float = 0.0):
+    """Register a source's point; the radius is the largest any chart asks for."""
+    k = point_key(s.point, s.offset)
+    old = n.points.get(k)
+    if old is not None and old.radius_km >= radius_km:
+        return
+    p = cfg.points[s.point]
+    n.points[k] = PointReq(k, s.point, p.lat, p.lon, tuple(s.offset), float(radius_km))
+
+
 def compute_needs(cfg: AppConfig) -> dict[str, ModelNeeds]:
     needs: dict[str, ModelNeeds] = {}
     for c in cfg.enabled_charts():
+        if isinstance(c, SnowChartConfig):
+            for s in c.sources:
+                m = cfg.resolved_models[s.model]
+                n = needs.setdefault(s.model, ModelNeeds(s.model))
+                _add_point(cfg, n, s, c.blend.neighbourhood_km)
+                n.max_hour = max(n.max_hour, min(s.until_hour or m.max_hour, m.max_hour))
+                n.need_profile = True
+                n.profile_roles |= {"temperature", "height", "dewpoint_depression"}
+                if c.blend.use_wind:
+                    n.profile_roles |= {"wind_speed", "wind_direction"}
+                n.need_precip = True
+            continue
         layers = [("fl", c.freezing_level), ("precip", c.precip_sources)]
         for layer, sources in layers:
             for s in sources:
                 m = cfg.resolved_models[s.model]
                 n = needs.setdefault(s.model, ModelNeeds(s.model))
-                p = cfg.points[s.point]
-                k = point_key(s.point, s.offset)
-                n.points[k] = PointReq(k, s.point, p.lat, p.lon, tuple(s.offset))
+                _add_point(cfg, n, s)
                 n.max_hour = max(n.max_hour, min(s.until_hour or m.max_hour, m.max_hour))
                 wind_here = c.wind.enabled and (
                     (c.wind.source == "freezing_level" and layer == "fl") or
@@ -142,6 +164,97 @@ def profile_hours(m: ModelConfig, max_hour: int) -> list[int]:
 
 def precip_hours(m: ModelConfig, max_hour: int) -> list[int]:
     return list(range(m.precip_step_hours, max_hour + 1, m.precip_step_hours))
+
+
+MAX_RADIUS_CELLS = 3
+
+
+def point_entries(g: "grib.GridInfo", needs: ModelNeeds) -> dict:
+    """Grid cell(s) for every needed point: the centre cell plus, when the point
+    asks for a neighbourhood, the block of cells around it."""
+    out = {}
+    for pk, p in needs.points.items():
+        j, i = grib.nearest_index(g, p.lat, p.lon, p.offset)
+        spacing = grib.grid_spacing_km(g, j, i)
+        radius = 0
+        if p.radius_km > 0 and spacing > 0:
+            radius = min(MAX_RADIUS_CELLS, int(round(p.radius_km / spacing)))
+        cells = [list(c) for c in grib.cell_block(g, j, i, radius)]
+        out[pk] = {"point": p.point, "lat": p.lat, "lon": p.lon, "offset": list(p.offset),
+                   "j": j, "i": i, "index": j * g.ni + i,
+                   "grid_lat": round(float(g.lats[j, i]), 5), "grid_lon": round(float(g.lons[j, i]), 5),
+                   "spacing_km": round(spacing, 3), "radius_cells": radius, "cells": cells}
+    return out
+
+
+def _point_cells(entry: dict) -> list[list[int]]:
+    # grid caches / entries written before neighbourhoods existed only have "index"
+    return entry.get("cells") or [[0, 0, entry["index"]]]
+
+
+def extraction_indices(pts: dict) -> list[int]:
+    """Unique, sorted flat indices of every cell of every point."""
+    return sorted({c[2] for e in pts.values() for c in _point_cells(e)})
+
+
+def _cell_profile(results: dict, pos: int, hours: list[int], levels: list[int], roles) -> dict:
+    """Profile dict of one grid cell; ``pos`` is its position in the extracted values."""
+    d = {"surface_pressure_hpa": []}
+    for role in roles:
+        d[role] = []
+    for h in hours:
+        v, u = results[(h, "surface_pressure", None)]
+        d["surface_pressure_hpa"].append(_to_hpa(v[pos], u))
+        for role in roles:
+            row = []
+            for lv in levels:
+                v, u = results[(h, role, lv)]
+                row.append(_convert(role, v[pos], u))
+            d[role].append(row)
+    return d
+
+
+def _cell_precip(results: dict, pos: int, hours: list[int]) -> list:
+    series = [0.0]
+    for h in hours:
+        v, u = results[(h, "precip_accum", None)]
+        series.append(_convert("precip_accum", v[pos], u))
+    return series
+
+
+def assemble_run(key: str, m: ModelConfig, needs: ModelNeeds, init: datetime, levels: list[int],
+                 pts: dict, indices: list[int], results: dict, total_bytes: int = 0,
+                 missing: int = 0) -> dict:
+    """Build the stored run dict from extracted values.
+
+    ``results[(hour, role, level|None)] = (values, units)`` where ``values`` is
+    aligned with ``indices`` (see :func:`extraction_indices`).
+    """
+    pos = {idx: n for n, idx in enumerate(indices)}
+    out = {"model": key, "run": run_id(init), "levels": levels, "signature": needs.signature(),
+           "processed_at": datetime.now(UTC).isoformat(), "bytes": total_bytes,
+           "missing_files": missing,
+           "points": pts, "profile": None, "precip": None}
+    roles = sorted(needs.profile_roles)
+    if needs.need_profile:
+        hours = profile_hours(m, needs.max_hour)
+        prof = {"hours": hours, "data": {}, "neighbours": {}}
+        for pk, e in pts.items():
+            cells = _point_cells(e)
+            prof["data"][pk] = _cell_profile(results, pos[cells[0][2]], hours, levels, roles)
+            prof["neighbours"][pk] = {f"{dj},{di}": _cell_profile(results, pos[idx], hours, levels, roles)
+                                      for dj, di, idx in cells if (dj, di) != (0, 0)}
+        out["profile"] = prof
+    if needs.need_precip:
+        hours = precip_hours(m, needs.max_hour)
+        pr = {"hours": [0] + hours, "data": {}, "neighbours": {}}
+        for pk, e in pts.items():
+            cells = _point_cells(e)
+            pr["data"][pk] = _cell_precip(results, pos[cells[0][2]], hours)
+            pr["neighbours"][pk] = {f"{dj},{di}": _cell_precip(results, pos[idx], hours)
+                                    for dj, di, idx in cells if (dj, di) != (0, 0)}
+        out["precip"] = pr
+    return out
 
 
 # --------------------------------------------------------------------------- worker
@@ -249,12 +362,7 @@ class Datamart:
             g = grib.read_grid(path)
         finally:
             os.remove(path)
-        out = {}
-        for pk, p in needs.points.items():
-            j, i = grib.nearest_index(g, p.lat, p.lon, p.offset)
-            out[pk] = {"point": p.point, "lat": p.lat, "lon": p.lon, "offset": list(p.offset),
-                       "j": j, "i": i, "index": j * g.ni + i,
-                       "grid_lat": round(float(g.lats[j, i]), 5), "grid_lon": round(float(g.lons[j, i]), 5)}
+        out = point_entries(g, needs)
         (self.grid_dir / f"{key}.json").write_text(json.dumps({"signature": g.signature, "points": out}, indent=1))
         return out
 
@@ -263,8 +371,7 @@ class Datamart:
                     progress: Callable[[int, int], None] | None = None) -> dict:
         m = self.cfg.resolved_models[key]
         pts = self.resolve_points(key, m, needs, init)
-        pkeys = list(pts)
-        indices = [pts[k]["index"] for k in pkeys]
+        indices = extraction_indices(pts)
         files = list(self.required_files(m, needs, init, levels))
         g = self.cfg.general
 
@@ -302,41 +409,8 @@ class Datamart:
         for u in missing[:10]:
             log.warning("missing on Datamart: %s", u)
 
-        # ---- assemble per point
-        out = {"model": key, "run": run_id(init), "levels": levels, "signature": needs.signature(),
-               "processed_at": datetime.now(UTC).isoformat(), "bytes": total_bytes,
-               "missing_files": len(missing),
-               "points": pts, "profile": None, "precip": None}
-        if needs.need_profile:
-            hours = profile_hours(m, needs.max_hour)
-            prof = {"hours": hours, "data": {}}
-            for pi, pk in enumerate(pkeys):
-                d = {"surface_pressure_hpa": []}
-                for role in needs.profile_roles:
-                    d[role] = []
-                for h in hours:
-                    v, u = results[(h, "surface_pressure", None)]
-                    d["surface_pressure_hpa"].append(_to_hpa(v[pi], u))
-                    for role in needs.profile_roles:
-                        row = []
-                        for lv in levels:
-                            v, u = results[(h, role, lv)]
-                            row.append(_convert(role, v[pi], u))
-                        d[role].append(row)
-                prof["data"][pk] = d
-            out["profile"] = prof
-        if needs.need_precip:
-            hours = precip_hours(m, needs.max_hour)
-            pr = {"hours": [0] + hours, "data": {}}
-            for pi, pk in enumerate(pkeys):
-                series = [0.0]
-                for h in hours:
-                    v, u = results[(h, "precip_accum", None)]
-                    series.append(_convert("precip_accum", v[pi], u))
-                pr["data"][pk] = series
-            out["precip"] = pr
-        return out
-
+        return assemble_run(key, m, needs, init, levels, pts, indices, results,
+                            total_bytes, len(missing))
 
 def _to_hpa(v, units):
     if v is None:

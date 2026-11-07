@@ -22,7 +22,7 @@ def _setup_logging():
 
 
 def cmd_check(cfg) -> int:
-    from .datamart import compute_needs, profile_hours, precip_hours
+    from .datamart import MAX_RADIUS_CELLS, compute_needs, profile_hours, precip_hours
     needs = compute_needs(cfg)
     print("Configuration OK\n")
     print(f"Timezone: {cfg.general.timezone}   poll every {cfg.general.poll_interval_minutes} min   "
@@ -30,13 +30,30 @@ def cmd_check(cfg) -> int:
     print(f"Discord: {'enabled' if cfg.discord.enabled else 'DISABLED'}   alerts webhook: "
           f"{'set' if cfg.discord.alerts_webhook else 'not set'}\n")
     print("Charts:")
+    from .config import SnowChartConfig
+
+    def chain(sources):
+        return " → ".join(f"{s.model}@{s.point}{'' if tuple(s.offset)==(0,0) else tuple(s.offset)}"
+                          f"{'' if s.until_hour is None else f'(≤{s.until_hour}h)'}" for s in sources)
+
     for c in cfg.charts:
-        fl = " → ".join(f"{s.model}@{s.point}{'' if tuple(s.offset)==(0,0) else tuple(s.offset)}"
-                        f"{'' if s.until_hour is None else f'(≤{s.until_hour}h)'}" for s in c.freezing_level)
-        pr = " → ".join(f"{s.model}@{s.point}{'' if tuple(s.offset)==(0,0) else tuple(s.offset)}"
-                        f"{'' if s.until_hour is None else f'(≤{s.until_hour}h)'}" for s in c.precip_sources)
         state = "" if c.enabled else " [disabled]"
-        print(f"  {c.id}{state}: {c.hours}h\n     freezing level: {fl}\n     precipitation:  {pr}")
+        if isinstance(c, SnowChartConfig):
+            b = c.blend
+            elevs = "/".join(f"{e.elevation:g}" for e in c.elevations)
+            if b.neighbourhood_km > 0:
+                # cell count depends on the grid spacing, known only once a file is read
+                w = 2 * MAX_RADIUS_CELLS + 1
+                hood = f"up to {w}×{w} cells ({b.neighbourhood_km:g} km)"
+            else:
+                hood = "centre cell only"
+            wind = " + wind" if b.use_wind else ""
+            print(f"  {c.id}{state}: {c.hours}h blended snow, elevations {elevs} m\n"
+                  f"     sources: {chain(c.sources)}\n"
+                  f"     blend: {b.lagged_runs} runs × {hood} × phase/ratio perturbations{wind}")
+        else:
+            print(f"  {c.id}{state}: {c.hours}h\n     freezing level: {chain(c.freezing_level)}\n"
+                  f"     precipitation:  {chain(c.precip_sources)}")
     print("\nModel downloads (estimate):")
     total_day = 0.0
     n_levels = lambda m: len([l for l in m.levels if l >= cfg.general.profile_top_hpa])

@@ -11,13 +11,33 @@ from zoneinfo import ZoneInfo
 
 from .assemble import build_chart_data
 from .chart import format_zulu_local, render_chart
-from .config import AppConfig, ChartConfig
+from .config import AppConfig, ChartBase, SnowChartConfig
 from .datamart import Datamart, RunIncomplete, compute_needs, parse_run_id, run_id
 from .discord import Discord
 from .store import Store
 
 log = logging.getLogger(__name__)
 UTC = timezone.utc
+
+
+def due_slot(times: list[str], now: datetime, tz: ZoneInfo) -> datetime:
+    """Most recent scheduled local wall-clock time (``"HH:MM"`` in ``tz``, today or
+    yesterday) that is <= ``now``, as an aware UTC datetime.  DST is handled by
+    ZoneInfo (a nonexistent spring-forward time maps to the shifted instant)."""
+    if not times:
+        raise ValueError("no scheduled times")
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    today = now.astimezone(tz).date()
+    best: Optional[datetime] = None
+    for day in (today, today - timedelta(days=1)):
+        for t in times:
+            hh, mm = (int(x) for x in t.split(":"))
+            cand = datetime(day.year, day.month, day.day, hh, mm).replace(tzinfo=tz).astimezone(UTC)
+            if cand <= now and (best is None or cand > best):
+                best = cand
+    assert best is not None   # yesterday's slots are always in the past
+    return best
 
 
 class Service:
@@ -92,47 +112,134 @@ class Service:
             self.clear_alert(akey, f"{m.label}: back to normal", f"Processed run {latest['run']}.")
 
     # ------------------------------------------------------------------ charts
-    def chart_models(self, chart: ChartConfig) -> list[str]:
-        return list(dict.fromkeys(s.model for s in chart.freezing_level + chart.precip_sources))
+    def chart_models(self, chart: ChartBase) -> list[str]:
+        return chart.models()
 
-    def render(self, chart: ChartConfig, runs: Optional[dict] = None):
-        runs = runs or {m: self.store.latest_run(m) for m in self.chart_models(chart)}
-        runs = {k: v for k, v in runs.items() if v}
-        data = build_chart_data(self.cfg, chart, runs)
+    def render(self, chart: ChartBase, runs: Optional[dict] = None):
+        """Render ``chart`` and copy it to ``latest.png``.
+
+        Meteogram: ``runs`` is ``{model: run}`` (default: the latest stored runs).
+        Blended snow: ``runs`` is ``{model: [run, ...]}`` newest first (default: the
+        ``blend.lagged_runs`` most recent stored runs of each model).
+        Returns ``(path, data, latest_runs)`` with ``latest_runs = {model: newest run}``.
+        """
+        if isinstance(chart, SnowChartConfig):
+            from .blend import build_snow_chart_data
+            from .snowchart import render_snow_chart
+            if runs is None:
+                runs = {m: self.store.recent_runs(m, chart.blend.lagged_runs) for m in self.chart_models(chart)}
+            runs = {k: list(v) for k, v in runs.items() if v}
+            data = build_snow_chart_data(self.cfg, chart, runs)
+            renderer = render_snow_chart
+            latest = {k: v[0] for k, v in runs.items()}
+        else:
+            runs = runs or {m: self.store.latest_run(m) for m in self.chart_models(chart)}
+            runs = {k: v for k, v in runs.items() if v}
+            data = build_chart_data(self.cfg, chart, runs)
+            renderer = render_chart
+            latest = runs
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         path = self.store.chart_path(chart.id, stamp, self.cfg.general.keep_charts)
-        render_chart(data, path)
+        renderer(data, path)
         shutil.copyfile(path, path.parent / "latest.png")
-        return path, data, runs
+        return path, data, latest
 
-    def maybe_post(self, chart: ChartConfig, updated: set[str], now: datetime):
+    def maybe_post(self, chart: ChartBase, updated: set[str], now: datetime):
+        """Render and post ``chart`` when its posting policy says so.
+
+        State per chart (state.json -> charts.<id>): ``signature`` (the
+        ``model:run`` list of the data last posted / acknowledged), ``posted_at``
+        and, in schedule mode, ``scheduled_slot`` (UTC ISO time of the last
+        handled schedule slot).
+
+        Update mode (``post.times`` empty):
+          * post when the signature (latest run of every chart model) changed AND
+            either ``post.models`` is empty or one of the changed models is listed
+            in ``post.models``;
+          * if only non-trigger models changed, nothing happens and the stored
+            signature is kept, so the eventual post's "Updated:" line lists every
+            model that changed since the previous post.
+        Schedule mode (``post.times`` set: local wall-clock times in
+        ``general.timezone``):
+          * new model runs never trigger a post by themselves;
+          * post (with the latest data) when the most recent due slot
+            (``due_slot``) differs from ``scheduled_slot``; a service that missed
+            several slots posts once, for the latest one;
+          * with no data at all the slot is marked without posting.
+        Both modes:
+          * first cycle with ``general.post_on_startup: false`` and no stored state
+            for the chart: record the signature (and the current slot) silently.
+            With ``post_on_startup: true`` the first cycle posts normally (schedule
+            mode: immediately, unless that slot was already handled before a
+            restart; update mode: unless the signature is unchanged);
+          * ``min_post_interval_minutes`` throttles posts; a throttled scheduled
+            post leaves the slot unmarked so a later poll posts it.
+        """
         models = self.chart_models(chart)
-        runs = {m: self.store.latest_run(m) for m in models}
-        signature = ",".join(f"{m}:{runs[m]['run']}" for m in models if runs.get(m))
-        if not signature:
-            return
+        latest = {m: self.store.latest_run(m) for m in models}
+        signature = ",".join(f"{m}:{latest[m]['run']}" for m in models if latest.get(m))
         cs = self.store.chart_state(chart.id)
-        if cs.get("signature") == signature:
-            return
-        if self.first_cycle and not self.cfg.general.post_on_startup and "signature" not in cs:
-            cs["signature"] = signature
-            return
-        if cs.get("posted_at") and chart.min_post_interval_minutes:
-            if now - datetime.fromisoformat(cs["posted_at"]) < timedelta(minutes=chart.min_post_interval_minutes):
-                return
-        path, data, runs = self.render(chart, runs)
-        old = dict(p.split(":") for p in cs.get("signature", "").split(",") if ":" in p)
-        new_bits = [f"{self.cfg.resolved_models[m].label} {runs[m]['run'][9:12]}"
-                    for m in models if runs.get(m) and old.get(m) != runs[m]["run"]]
-        lines = [f"**Updated:** {', '.join(new_bits)}" if new_bits else ""]
+        old = dict(p.split(":", 1) for p in cs.get("signature", "").split(",") if ":" in p)
+        changed = [m for m in models if latest.get(m) and old.get(m) != latest[m]["run"]]
         tz = ZoneInfo(self.cfg.general.timezone)
+        startup_silent = self.first_cycle and not self.cfg.general.post_on_startup
+
+        slot = None
+        if chart.post.scheduled:
+            slot_dt = due_slot(chart.post.times, now, tz)
+            slot = slot_dt.isoformat()
+            if cs.get("scheduled_slot") == slot:
+                return
+            if startup_silent and "scheduled_slot" not in cs and "signature" not in cs:
+                cs["scheduled_slot"] = slot
+                if signature:
+                    cs["signature"] = signature
+                return
+            if not signature:
+                cs["scheduled_slot"] = slot
+                return
+            if self._throttled(chart, cs, now):
+                return
+            header = f"**Scheduled post** {slot_dt.astimezone(tz):%H:%M}"
+        else:
+            if not signature or cs.get("signature") == signature:
+                return
+            if startup_silent and "signature" not in cs:
+                cs["signature"] = signature
+                return
+            if chart.post.models and not any(m in chart.post.models for m in changed):
+                return
+            if self._throttled(chart, cs, now):
+                return
+            header = ""
+
+        if isinstance(chart, SnowChartConfig):
+            path, data, runs = self.render(chart)
+        else:
+            path, data, runs = self.render(chart, latest)
+        if not header:
+            new_bits = [f"{self.cfg.resolved_models[m].label} {runs[m]['run'][9:12]}"
+                        for m in models if runs.get(m) and old.get(m) != runs[m]["run"]]
+            header = f"**Updated:** {', '.join(new_bits)}" if new_bits else ""
+        lines = [header]
         for s in data.sources:
             lines.append(f"{s.role}: {s.model_label} {format_zulu_local(s.run, tz, '%d %b %HZ')} ({s.hours})")
+        recipe = getattr(data, "recipe", "")
+        if recipe:
+            lines.append(recipe)
         ok = self.discord.post_chart(self.cfg.webhook_for(chart), path, data.title,
                                      "\n".join(l for l in lines if l), chart.message)
         cs.update(signature=signature, rendered=str(path), posted_at=now.isoformat(), posted=ok)
+        if slot is not None:
+            cs["scheduled_slot"] = slot
         self.store.save_state()
         log.info("chart %s rendered (%s) posted=%s", chart.id, path.name, ok)
+
+    @staticmethod
+    def _throttled(chart: ChartBase, cs: dict, now: datetime) -> bool:
+        if cs.get("posted_at") and chart.min_post_interval_minutes:
+            return now - datetime.fromisoformat(cs["posted_at"]) < timedelta(minutes=chart.min_post_interval_minutes)
+        return False
 
     # ------------------------------------------------------------------ loop
     def poll_once(self):

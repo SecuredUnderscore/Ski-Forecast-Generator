@@ -206,20 +206,26 @@ def _accum_between(w: Window, b0: datetime, b1: datetime) -> Optional[float]:
 
 
 def _period_origin(cfg: AppConfig, chart: ChartConfig, start: datetime, tz: str) -> datetime:
+    return period_origin(cfg, chart.precip_sources, start, tz,
+                         chart.precip_total_start_hour_local, chart.style.tick_hour_utc)
+
+
+def period_origin(cfg: AppConfig, sources: list[SourceConfig], start: datetime, tz: str,
+                  start_hour_local: Optional[int] = None, tick_hour_utc: Optional[int] = None) -> datetime:
     """UTC start of the precipitation period at or before ``start``: the configured local hour
-    (default: the x-axis day marker, style.tick_hour_utc, or local midnight), snapped to the nearest
-    output step of the chart's precip models so bars line up with the data
+    (default: the x-axis day marker, ``tick_hour_utc``, or local midnight), snapped to the nearest
+    output step of the ``sources``' models so bars line up with the data
     (e.g. 3-hourly GDPS can't start a bar at 08Z, so local midnight in PST becomes 09Z)."""
-    if chart.precip_total_start_hour_local is not None:
-        zone, hour = ZoneInfo(tz), chart.precip_total_start_hour_local
-    elif chart.style.tick_hour_utc is not None:
-        zone, hour = UTC, chart.style.tick_hour_utc
+    if start_hour_local is not None:
+        zone, hour = ZoneInfo(tz), start_hour_local
+    elif tick_hour_utc is not None:
+        zone, hour = UTC, tick_hour_utc
     else:
         zone, hour = ZoneInfo(tz), 0
     local = start.astimezone(zone).replace(hour=hour, minute=0, second=0, microsecond=0)
     if local > start:
         local -= timedelta(days=1)
-    step = max((cfg.resolved_models[s.model].precip_step_hours for s in chart.precip_sources
+    step = max((cfg.resolved_models[s.model].precip_step_hours for s in sources
                 if s.model in cfg.resolved_models), default=1)
     return _floor(local.astimezone(UTC) + timedelta(hours=step / 2), step)
 

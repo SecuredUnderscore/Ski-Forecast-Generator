@@ -42,6 +42,16 @@ class Store:
             return None
         return json.loads((self.runs / model / f"{ids[-1]}.json").read_text())
 
+    def recent_runs(self, model: str, n: int) -> list[dict]:
+        """Up to ``n`` newest stored runs of ``model``, newest first."""
+        out = []
+        for rid in sorted(self.run_ids(model), reverse=True)[:max(0, n)]:
+            try:
+                out.append(json.loads((self.runs / model / f"{rid}.json").read_text()))
+            except (FileNotFoundError, json.JSONDecodeError):
+                continue   # pruned or half-written meanwhile
+        return out
+
     # ------------------------------------------------------------------ state
     def _load_state(self) -> dict:
         try:

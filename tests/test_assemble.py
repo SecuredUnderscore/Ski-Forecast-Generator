@@ -6,7 +6,7 @@ import yaml
 
 from skiforecast.assemble import build_chart_data
 from skiforecast.chart import render_chart
-from skiforecast.config import load_config
+from skiforecast.config import ChartConfig, load_config
 
 UTC = timezone.utc
 LEVELS = [1015, 1000, 950, 900, 850, 800, 750, 700, 650, 600]
@@ -84,6 +84,8 @@ def test_fallback_when_first_model_missing(tmp_path):
 def test_no_data_renders(tmp_path):
     cfg = make_cfg(tmp_path)
     for chart in cfg.charts:
+        if not isinstance(chart, ChartConfig):   # blended snow charts have their own builder
+            continue
         d = build_chart_data(cfg, chart, {})
         render_chart(d, tmp_path / f"{chart.id}.png")
 

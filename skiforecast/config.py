@@ -10,7 +10,7 @@ import copy
 import os
 import re
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional, Union
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
@@ -122,16 +122,69 @@ class StyleConfig(Strict):
     background_color: str = "#e8e8e8"
 
 
-class ChartConfig(Strict):
+_TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+
+
+class PostConfig(Strict):
+    """When a chart is (re-)posted to Discord.
+
+    Default: whenever any model the chart uses has a new run.
+    ``models``: only new runs of these models trigger a post (other models'
+                runs are still used for the data when the post happens).
+    ``times``:  local wall-clock times (HH:MM).  When set, the chart is posted
+                on this schedule with the latest data instead of on model updates.
+    """
+    models: list[str] = []
+    times: list[str] = []
+
+    @field_validator("times")
+    @classmethod
+    def _times(cls, v):
+        out = []
+        for t in v:
+            m = _TIME_RE.match(str(t).strip())
+            if not m:
+                raise ValueError(f"post time {t!r} must be HH:MM (24 h)")
+            out.append(f"{int(m.group(1)):02d}:{m.group(2)}")
+        return sorted(set(out))
+
+    @property
+    def scheduled(self) -> bool:
+        return bool(self.times)
+
+
+class ChartBase(Strict):
+    """Fields shared by every chart type."""
     id: str
     title: str
-    subtitle: str = "Freezing Level · Precipitation"
     enabled: bool = True
     webhook: Optional[str] = None              # falls back to discord.default_webhook
     message: str = ""                          # optional text posted with the image
-    hours: int = Field(240, gt=0)              # maximum chart length from start
     history_hours: int = Field(0, ge=0)        # hours before "now" to keep on the chart
     trim_to_data: bool = False                 # end the chart where the model data ends
+    min_post_interval_minutes: int = Field(0, ge=0)
+    post: PostConfig = PostConfig()
+
+    @field_validator("id")
+    @classmethod
+    def _id(cls, v):
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", v):
+            raise ValueError("chart id may only contain letters, digits, '_' and '-'")
+        return v
+
+    def all_sources(self) -> list[SourceConfig]:          # overridden
+        return []
+
+    def models(self) -> list[str]:
+        """Model keys used by this chart, in first-use order."""
+        return list(dict.fromkeys(s.model for s in self.all_sources()))
+
+
+class ChartConfig(ChartBase):
+    """Classic meteogram: freezing level line(s) + precipitation bars."""
+    type: Literal["meteogram"] = "meteogram"
+    subtitle: str = "Freezing Level · Precipitation"
+    hours: int = Field(240, gt=0)              # maximum chart length from start
     freezing_level: list[SourceConfig]
     precipitation: Optional[list[SourceConfig]] = None   # None = same as freezing_level
     freezing_level_method: Literal["highest", "lowest"] = "highest"
@@ -143,14 +196,6 @@ class ChartConfig(Strict):
     wind: WindConfig = WindConfig()
     reference_lines: list[ReferenceLineConfig] = []
     style: StyleConfig = StyleConfig()
-    min_post_interval_minutes: int = Field(0, ge=0)
-
-    @field_validator("id")
-    @classmethod
-    def _id(cls, v):
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", v):
-            raise ValueError("chart id may only contain letters, digits, '_' and '-'")
-        return v
 
     @field_validator("freezing_level")
     @classmethod
@@ -162,6 +207,96 @@ class ChartConfig(Strict):
     @property
     def precip_sources(self) -> list[SourceConfig]:
         return self.precipitation if self.precipitation is not None else self.freezing_level
+
+    def all_sources(self) -> list[SourceConfig]:
+        return self.freezing_level + self.precip_sources
+
+
+# --------------------------------------------------------------------------- blended snow chart
+class ElevationConfig(Strict):
+    elevation: float = Field(ge=-500, le=9000)   # m ASL
+    label: str = ""
+
+
+class BlendConfig(Strict):
+    """How the spread (margin of error) is built.  All of it comes from data the
+    service already downloads: recent runs of the same model, the grid cells
+    around the point, and fixed perturbations of the phase/ratio physics."""
+    lagged_runs: int = Field(3, ge=1, le=10)            # recent runs of each model to blend (<= general.keep_runs)
+    neighbourhood_km: float = Field(6.0, ge=0, le=50)   # radius around the point; 0 = centre cell only
+    temperature_sigma_c: float = Field(1.0, ge=0, le=5) # wet-bulb perturbation (+/-) for the phase decision
+    ratio_spread: float = Field(0.3, ge=0, le=1)        # +/- fraction on the snow-to-liquid ratio
+    widen: float = Field(1.5, ge=1, le=5)               # multiply the raw spread (ensembles are under-dispersive)
+    use_wind: bool = False                              # lower the ratio in strong wind (downloads wind files)
+    snow_level_offset_m: float = Field(150, ge=0, le=1000)  # snow reaches this far below the wet-bulb 0 C height
+
+
+class SnowStyleConfig(Strict):
+    width_in: float = 11.0
+    panel_height_in: float = 2.4            # per elevation panel
+    level_panel_height_in: float = 2.6      # the snow-level panel on top
+    dpi: int = 110
+    show_bar_labels: bool = True            # centre value above each bar
+    show_bar_ranges: bool = False           # also print "low-high" under each bar label
+    show_model_transitions: bool = True
+    show_footer: bool = True
+    show_now_line: bool = True
+    show_freezing_level: bool = True        # thin freezing-level line on the snow-level panel
+    tick_hour_utc: Optional[int] = Field(None, ge=0, le=23)
+    min_ticks_per_day: int = Field(1, ge=1, le=11)
+    snow_axis_max_cm: Optional[float] = None     # None = auto per panel
+    rain_axis_max_mm: Optional[float] = None
+    snow_color: str = "#3a6fb0"
+    snow_text_color: str = "#24487a"
+    rain_color: str = "#5aa65a"
+    rain_text_color: str = "#1f6b1f"
+    snow_level_color: str = "#3a6fb0"
+    freezing_level_color: str = "#a3232b"
+    background_color: str = "#e8e8e8"
+    show_slot_separators: bool = True       # thin line between slots so each snow/rain pair reads as one
+    slot_separator_color: str = "#c9c9c9"
+
+
+class SnowChartConfig(ChartBase):
+    """Blended Snow Forecast: stacked snow/rain panels, one per elevation, with
+    a spread built from recent runs, neighbouring cells and physics perturbations."""
+    type: Literal["blended_snow"]
+    subtitle: str = "Blended Snow Forecast"
+    hours: int = Field(48, gt=0)
+    sources: list[SourceConfig]                 # one chain for profile + precipitation
+    elevations: list[ElevationConfig]
+    bar_hours: int = Field(3, ge=1, le=24)
+    total_hours: int = Field(24, ge=1, le=72)
+    total_start_hour_local: Optional[int] = Field(None, ge=0, le=23)   # None = style.tick_hour_utc, else local midnight
+    blend: BlendConfig = BlendConfig()
+    style: SnowStyleConfig = SnowStyleConfig()
+
+    @field_validator("elevations", mode="before")
+    @classmethod
+    def _elevs(cls, v):
+        if not isinstance(v, list):
+            raise ValueError("elevations must be a list")
+        return [{"elevation": e} if isinstance(e, (int, float)) else e for e in v]
+
+    @field_validator("elevations")
+    @classmethod
+    def _elevs_count(cls, v):
+        if not 1 <= len(v) <= 5:
+            raise ValueError("elevations needs 1 to 5 entries")
+        return sorted(v, key=lambda e: -e.elevation)      # highest first (top panel)
+
+    @field_validator("sources")
+    @classmethod
+    def _sources(cls, v):
+        if not v:
+            raise ValueError("sources needs at least one entry")
+        return v
+
+    def all_sources(self) -> list[SourceConfig]:
+        return list(self.sources)
+
+
+AnyChart = Annotated[Union[ChartConfig, SnowChartConfig], Field(discriminator="type")]
 
 
 # --------------------------------------------------------------------------- general
@@ -204,23 +339,32 @@ class AppConfig(Strict):
     discord: DiscordConfig = DiscordConfig()
     points: dict[str, PointConfig]
     models: dict[str, dict] = {}                   # overrides / additional models (raw, merged below)
-    charts: list[ChartConfig]
+    charts: list[AnyChart]
 
     # filled by load_config
     resolved_models: dict[str, ModelConfig] = {}
 
+    @model_validator(mode="before")
+    @classmethod
+    def _default_chart_type(cls, data):
+        # charts without `type:` are classic meteograms (backwards compatible)
+        if isinstance(data, dict) and isinstance(data.get("charts"), list):
+            data = dict(data)
+            data["charts"] = [{"type": "meteogram", **c} if isinstance(c, dict) and "type" not in c else c
+                              for c in data["charts"]]
+        return data
+
     # ------------------------------------------------------------------ helpers
-    def enabled_charts(self) -> list[ChartConfig]:
+    def enabled_charts(self) -> list[ChartBase]:
         return [c for c in self.charts if c.enabled]
 
     def used_models(self) -> set[str]:
         out = set()
         for c in self.enabled_charts():
-            for s in c.freezing_level + c.precip_sources:
-                out.add(s.model)
+            out.update(c.models())
         return out
 
-    def webhook_for(self, chart: ChartConfig) -> Optional[str]:
+    def webhook_for(self, chart: ChartBase) -> Optional[str]:
         return chart.webhook or self.discord.default_webhook
 
 
@@ -295,7 +439,14 @@ def _cross_validate(cfg: AppConfig) -> list[str]:
             errs.append(f"{where}: no webhook (set charts[].webhook or discord.default_webhook)")
         if c.webhook and not _WEBHOOK_RE.match(c.webhook):
             errs.append(f"{where}.webhook does not look like a Discord webhook URL")
-        for layer, sources in (("freezing_level", c.freezing_level), ("precipitation", c.precip_sources)):
+        for mk in c.post.models:
+            if mk not in c.models():
+                errs.append(f"{where}.post.models: {mk!r} is not used by this chart (uses {c.models()})")
+        if isinstance(c, ChartConfig):
+            layers = (("freezing_level", c.freezing_level), ("precipitation", c.precip_sources))
+        else:
+            layers = (("sources", c.sources),)
+        for layer, sources in layers:
             for i, s in enumerate(sources):
                 w = f"{where}.{layer}[{i}]"
                 m = cfg.resolved_models.get(s.model)
@@ -307,13 +458,26 @@ def _cross_validate(cfg: AppConfig) -> list[str]:
                     errs.append(f"{w}: until_hour {s.until_hour} exceeds {s.model} max_hour {m.max_hour}")
                 if s.point not in cfg.points:
                     errs.append(f"{w}: unknown point {s.point!r} (known: {sorted(cfg.points)})")
-                if m and layer == "freezing_level" and c.show_wetbulb_zero and "dewpoint_depression" not in m.variables:
-                    errs.append(f"{w}: model {s.model} has no dewpoint_depression variable; set show_wetbulb_zero: false")
-                if m and c.wind.enabled and not {"wind_speed", "wind_direction"} <= set(m.variables):
-                    errs.append(f"{w}: model {s.model} has no wind variables; disable wind")
-        if c.precip_total_hours % c.precip_bar_hours:
-            errs.append(f"{where}: precip_total_hours must be a multiple of precip_bar_hours")
-        s = c.style
-        if s.elevation_max_m <= s.elevation_min_m:
-            errs.append(f"{where}.style: elevation_max_m must exceed elevation_min_m")
+                if isinstance(c, ChartConfig):
+                    if m and layer == "freezing_level" and c.show_wetbulb_zero and "dewpoint_depression" not in m.variables:
+                        errs.append(f"{w}: model {s.model} has no dewpoint_depression variable; set show_wetbulb_zero: false")
+                    if m and c.wind.enabled and not {"wind_speed", "wind_direction"} <= set(m.variables):
+                        errs.append(f"{w}: model {s.model} has no wind variables; disable wind")
+                else:
+                    if m and "dewpoint_depression" not in m.variables:
+                        errs.append(f"{w}: model {s.model} has no dewpoint_depression variable (needed for the wet-bulb snow phase)")
+                    if m and c.blend.use_wind and not {"wind_speed", "wind_direction"} <= set(m.variables):
+                        errs.append(f"{w}: model {s.model} has no wind variables; set blend.use_wind: false")
+        if isinstance(c, ChartConfig):
+            if c.precip_total_hours % c.precip_bar_hours:
+                errs.append(f"{where}: precip_total_hours must be a multiple of precip_bar_hours")
+            s = c.style
+            if s.elevation_max_m <= s.elevation_min_m:
+                errs.append(f"{where}.style: elevation_max_m must exceed elevation_min_m")
+        else:
+            if c.total_hours % c.bar_hours:
+                errs.append(f"{where}: total_hours must be a multiple of bar_hours")
+            if c.blend.lagged_runs > cfg.general.keep_runs:
+                errs.append(f"{where}: blend.lagged_runs ({c.blend.lagged_runs}) exceeds general.keep_runs "
+                            f"({cfg.general.keep_runs}); raise keep_runs")
     return errs

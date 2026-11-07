@@ -1,17 +1,19 @@
 # Ski Forecast Generator
 
-Automatic ski-forecast meteograms (freezing level, wet-bulb snow level, precipitation, optional ridge-top wind) built from Environment Canada's free [MSC Datamart](https://dd.weather.gc.ca/) model output, posted to Discord every time a model publishes a new run.
+Automatic ski-forecast meteograms (freezing level, wet-bulb snow level, precipitation, optional ridge-top wind) and **Blended Snow Forecasts** (snow and rain per elevation with a margin of error) built from Environment Canada's free [MSC Datamart](https://dd.weather.gc.ca/) model output, posted to Discord every time a model publishes a new run or on a schedule.
 Inspired by PowderPicker, please support him on [Substack](https://powderpicker.substack.com/)!
 
 ![Example 10-day chart](docs/example_long_term.png)
+
+![Example Blended Snow Forecast](docs/example_blended_snow.png)
 
 ## How it works
 
 1. Every `poll_interval_minutes` (default 5), the service checks each model used by your charts for a new run.
 2. A run counts as ready once every file the charts need for its first and last forecast hours has been published.
-3. When a run is ready, the service downloads only the files it needs. That means the pressure levels from the surface up to `profile_top_hpa`, plus surface pressure and accumulated precipitation. It reads the values at your grid points and deletes each file straight away. Only small JSON extracts are kept, in `data/runs/`.
+3. When a run is ready, the service downloads only the files it needs. That means the pressure levels from the surface up to `profile_top_hpa`, plus surface pressure and accumulated precipitation. It reads the values at your grid points (and, for blended snow charts, the cells around them) and deletes each file straight away. Only small JSON extracts are kept, in `data/runs/`.
 4. It computes the freezing level and the wet-bulb 0 °C height (≈ snow level) from the vertical temperature/dewpoint profile. It also computes model ground elevation from surface pressure and, optionally, wind interpolated to a chosen elevation.
-5. Every chart that uses an updated model is re-rendered (`data/charts/<id>/latest.png`) and posted to its webhook.
+5. Every chart that uses an updated model is re-rendered (`data/charts/<id>/latest.png`) and posted to its webhook, unless the chart has its own posting rule (`post:`, see below).
 
 ### Built-in models
 
@@ -89,6 +91,64 @@ Times on the chart are in `general.timezone`, which is printed under the x axis.
 
 Titles can use `{fl_models}` and `{precip_models}`, e.g. `"Whistler — 10-day ({fl_models})"` becomes `HRDPS→GDPS`.
 
+**Posting** (`post:` per chart). By default a chart is posted whenever any model it uses has a new run. With four models feeding one chart that is a lot of posts, so you can narrow it:
+
+```yaml
+post:
+  models: [hrdps]              # only new HRDPS runs trigger a post; the other models are still used for the data
+```
+
+or post on a schedule instead of on updates:
+
+```yaml
+post:
+  times: ["06:00", "17:00"]    # local time (general.timezone); the latest data at that moment is posted
+```
+
+When `times` is set, model updates never trigger a post on their own. If the service was down over several scheduled times, it posts once, for the latest one. `min_post_interval_minutes` and `post_on_startup` apply to both modes.
+
+### Blended Snow Forecast
+
+A second chart type (`type: blended_snow`) that answers "how much snow, and how sure is that?" for a few elevations at one point:
+
+- A top panel with the snow level (wet-bulb 0 °C height minus an offset) and its spread, with your elevations marked.
+- One panel per elevation (highest first) with a snow bar (cm) and a rain bar (mm) for every `bar_hours` slot. Each bar prints its central value; the whisker is the spread (10th to 90th percentile). Hatched bars mean the phase could go either way. Boxed daily totals read `centre (low–high)`.
+
+```yaml
+- id: snow_2day
+  type: blended_snow
+  title: "Whistler — Blended Snow Forecast ({models})"
+  hours: 48
+  sources:
+    - { model: hrdps, point: whistler_peak }
+    - { model: gdps, point: whistler_peak }      # optional hand-over, same rules as the meteogram
+  elevations:
+    - { elevation: 2182, label: Peak }
+    - { elevation: 1850, label: Roundhouse }
+    - { elevation: 675, label: Village }
+  bar_hours: 3
+  total_hours: 24
+  post: { models: [hrdps] }
+```
+
+`sources` is one chain used for both the profile and the precipitation. `elevations` takes 1–5 entries, as numbers or `{elevation, label}`. `bar_hours`, `total_hours`, `total_start_hour_local`, `hours`, `history_hours`, `trim_to_data`, `post` and the `style` keys `tick_hour_utc` / `min_ticks_per_day` work like the meteogram's. `style.show_bar_ranges: true` also prints `low–high` under every bar value. Thin lines separate the slots so each snow/rain pair reads as one (`style.show_slot_separators`, `style.slot_separator_color`).
+
+**How the numbers are made.** For each elevation and time slot the model's temperature, dewpoint and (optionally) wind profiles are interpolated to that height:
+
+1. The wet-bulb temperature at the elevation decides the phase: all snow at or below 0 °C, all rain at or above 1.5 °C, a linear ramp between (Jennings et al. 2018). Snow reaches below the wet-bulb 0 °C height, so the wet-bulb is taken from 150 m higher, up to 300 m in heavy precipitation (Minder, Durran & Roe 2011).
+2. The snow-to-liquid ratio comes from the air temperature at the elevation, a lookup in the spirit of Dubé (2003) and Baxter et al. (2005): about 9:1 near 0 °C, peaking around 19:1 near −15 °C, falling again in very cold air. With `blend.use_wind: true` strong wind at the elevation lowers the ratio (Alcott & Steenburgh 2010); this downloads the wind files too.
+3. Snow cm = liquid precipitation × snow fraction × ratio; rain mm = liquid × (1 − snow fraction).
+
+**Where the spread comes from.** Nothing is trained on observations (the goal is to work at any point), so the margin of error is a *disagreement* measure built from data the service already has:
+
+- the model's last `blend.lagged_runs` runs (default 3; needs `general.keep_runs` at least that high),
+- the grid cells within `blend.neighbourhood_km` of the point (default 6 km: 5×5 cells for HRDPS, 3×3 for RDPS, the single cell for GDPS), weighted towards cells whose model terrain is close to the panel's elevation,
+- fixed perturbations: ±`temperature_sigma_c` on the wet-bulb (default 1 °C) and ±`ratio_spread` on the ratio (default 30 %).
+
+Every combination is a member; the centre is the weighted median and the spread the 10th–90th percentile, multiplied by `blend.widen` (default 1.5) because ensembles of this kind agree with each other more than with reality, with a floor of ±20 % (±2 cm on daily totals). Totals are summed per member before taking percentiles, so they are not the sum of the bar spreads. Expect the spread to jump where one model hands over to another: fewer runs and cells feed the coarser model. The chart footer prints the recipe.
+
+What to expect from it: a day 1–2 daily total within roughly a factor of 1.5 most days, phase right when the elevation is clearly above or below the snow level, and a visibly wider spread when runs or neighbouring cells disagree. It does not fix a model's systematic bias at your point, so if HRDPS always under-forecasts your summit, all its runs will agree on the wrong number.
+
 **Alerts** (`discord.alerts_webhook`) cover start-up, processing or rendering errors and a model going stale (`stale_after_hours` per model). A recovery notice follows each one, and repeats are throttled by `alert_repeat_hours`.
 
 ### Bandwidth
@@ -105,4 +165,5 @@ The Datamart serves whole national or global grids, so a point forecast still ha
 
 - The freezing level is a height above sea level taken from the model atmosphere, so it hardly depends on which grid cell you pick. Precipitation does depend on the cell, through orographic effects in the model terrain.
 - The wet-bulb 0 °C height is a good first guess at the snow level during precipitation. Snow often reaches 100–300 m lower in heavy precipitation.
+- The blended snow spread is under-dispersive by construction (same model family, no observations). Read it as "how much the recent runs, the surrounding terrain and the phase physics disagree", not as a statistical confidence interval.
 - HRDPS-West is an experimental product with no guaranteed availability.
