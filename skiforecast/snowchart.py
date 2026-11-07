@@ -322,12 +322,13 @@ def render_snow_chart(data: SnowChartData, out_path: str | pathlib.Path) -> path
         if data.subtitle:
             fig.text(0.5, 1 - 0.50 / H, data.subtitle, ha="center", va="top", fontsize=13, fontweight="bold")
         whisker = Line2D([], [], color=_darker(st.snow_text_color, 0.85), label="Spread (10–90 %)")
-        handles = [Patch(facecolor=st.snow_color, alpha=0.8, label="Snow (cm)"),
-                   Patch(facecolor=st.rain_color, alpha=0.8, label="Rain (mm)"),
+        handles = [Patch(facecolor=st.snow_color, alpha=0.8, label=f"{data.bar_hours}hr snow (cm)"),
+                   Patch(facecolor=st.rain_color, alpha=0.8, label=f"{data.bar_hours}hr rain (mm)"),
                    Patch(facecolor="#8a9aaa", hatch="///", edgecolor=(1, 1, 1, 0.8), linewidth=0,
                          label="Mixed phase"),
-                   whisker]
-        fig.legend(handles=handles, loc="center", bbox_to_anchor=(0.5, 1 - 1.12 / H), ncol=4, fontsize=10,
+                   whisker,
+                   Patch(facecolor="white", edgecolor=st.snow_text_color, label=f"{data.total_hours}hr total")]
+        fig.legend(handles=handles, loc="center", bbox_to_anchor=(0.5, 1 - 1.12 / H), ncol=5, fontsize=10,
                    frameon=False, handler_map={whisker: _WhiskerHandler()}, columnspacing=2.2)
 
         days, within = _time_ticks(data.start, data.end, tz, st.tick_hour_utc, _tick_step(st.min_ticks_per_day))
