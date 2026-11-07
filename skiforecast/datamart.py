@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import tempfile
 import time
@@ -42,6 +43,19 @@ def parse_run_id(s: str) -> datetime:
     return datetime.strptime(s, "%Y%m%dT%HZ").replace(tzinfo=UTC)
 
 
+class DatamartBusy(Exception):
+    """The Datamart kept timing out or dropping connections after all retries.
+
+    Common for a few minutes after a run is published, when every consumer is
+    downloading it at once; the service simply tries again on the next poll.
+    """
+
+
+def _backoff(attempt: int) -> float:
+    # 5, 10, 20, 40, 60, ... s with jitter so parallel workers don't retry in lockstep.
+    return min(5 * 2 ** attempt, 60) * random.uniform(0.75, 1.25)
+
+
 class Http:
     def __init__(self, user_agent: str, timeout: float, retries: int):
         self.s = requests.Session()
@@ -49,19 +63,47 @@ class Http:
         self.timeout = timeout
         self.retries = retries
 
-    def get(self, url: str, stream=False) -> requests.Response:
-        last = None
+    def _retry(self, url: str, fn):
+        """Call ``fn()`` until it succeeds, retrying network errors and 5xx/429."""
         for attempt in range(self.retries + 1):
             try:
-                r = self.s.get(url, timeout=self.timeout, stream=stream)
-                if r.status_code == 404:
-                    return r
-                r.raise_for_status()
-                return r
+                return fn()
             except requests.RequestException as e:
-                last = e
-                time.sleep(min(2 ** attempt, 20))
-        raise last  # type: ignore[misc]
+                resp = getattr(e, "response", None)
+                if resp is not None and resp.status_code < 500 and resp.status_code != 429:
+                    raise  # e.g. 403: retrying won't help
+                if attempt == self.retries:
+                    raise DatamartBusy(f"{url}: {type(e).__name__}: {e}") from e
+                log.debug("retrying %s after %s", url, e)
+                time.sleep(_backoff(attempt))
+
+    def get(self, url: str) -> requests.Response:
+        """GET a small resource (fully read).  404 is returned, not raised."""
+        def once():
+            r = self.s.get(url, timeout=self.timeout)
+            if r.status_code != 404:
+                r.raise_for_status()
+            return r
+        return self._retry(url, once)
+
+    def download(self, url: str, path: str) -> Optional[int]:
+        """Stream ``url`` into ``path``; return the size, or None on 404.
+
+        The whole transfer is retried, not just the request: a read timeout
+        halfway through the body restarts the file from scratch.
+        """
+        def once():
+            with self.s.get(url, timeout=self.timeout, stream=True) as r:
+                if r.status_code == 404:
+                    return None
+                r.raise_for_status()
+                size = 0
+                with open(path, "wb") as f:
+                    for chunk in r.iter_content(1 << 20):
+                        f.write(chunk)
+                        size += len(chunk)
+                return size
+        return self._retry(url, once)
 
     def listing(self, url: str) -> Optional[set[str]]:
         r = self.get(url)
@@ -261,16 +303,12 @@ def assemble_run(key: str, m: ModelConfig, needs: ModelNeeds, init: datetime, le
 def _extract_job(url: str, indices: list[int], tmp_dir: str, ua: str, timeout: float, retries: int):
     """Runs in a worker process: download one file, return values at indices."""
     http = Http(ua, timeout, retries)
-    r = http.get(url, stream=True)
-    if r.status_code == 404:
-        return url, None, "", 0
     fd, path = tempfile.mkstemp(suffix=".grib2", dir=tmp_dir)
-    size = 0
+    os.close(fd)
     try:
-        with os.fdopen(fd, "wb") as f:
-            for chunk in r.iter_content(1 << 20):
-                f.write(chunk)
-                size += len(chunk)
+        size = http.download(url, path)
+        if size is None:
+            return url, None, "", 0
         vals, units = grib.extract_values(path, indices)
         return url, vals, units, size
     finally:
@@ -351,14 +389,11 @@ class Datamart:
     def resolve_points(self, key: str, m: ModelConfig, needs: ModelNeeds, init: datetime) -> dict:
         """Locate grid cells for every needed point (cached per grid signature)."""
         url = fmt(m.directory_template, init, 0) + fmt(m.surface_file_template, init, 0, m.variables["surface_pressure"])
-        r = self.http.get(url, stream=True)
-        if r.status_code == 404:
-            raise RunIncomplete(f"{url} missing")
         fd, path = tempfile.mkstemp(suffix=".grib2", dir=self.tmp_dir)
+        os.close(fd)
         try:
-            with os.fdopen(fd, "wb") as f:
-                for chunk in r.iter_content(1 << 20):
-                    f.write(chunk)
+            if self.http.download(url, path) is None:
+                raise RunIncomplete(f"{url} missing")
             g = grib.read_grid(path)
         finally:
             os.remove(path)
@@ -387,23 +422,26 @@ class Datamart:
             done = 0
             missing: list[str] = []
             allowed = int(len(futs) * g.max_missing_fraction)
-            for fut in as_completed(futs):
-                h, role, lv = futs[fut]
-                url, vals, units, size = fut.result()
-                if vals is None:
-                    # The Datamart occasionally omits single files (e.g. one GDPS level at
-                    # one hour).  Tolerate a few; the affected level/time becomes a gap.
-                    missing.append(url)
-                    if len(missing) > allowed:
-                        for f in futs:
-                            f.cancel()
-                        raise RunIncomplete(f"{len(missing)} files missing, e.g. {url}")
-                    vals, units = [None] * len(indices), ""
-                results[(h, role, lv)] = (vals, units)
-                total_bytes += size
-                done += 1
-                if progress and (done % 50 == 0 or done == len(futs)):
-                    progress(done, len(futs))
+            try:
+                for fut in as_completed(futs):
+                    h, role, lv = futs[fut]
+                    url, vals, units, size = fut.result()
+                    if vals is None:
+                        # The Datamart occasionally omits single files (e.g. one GDPS level at
+                        # one hour).  Tolerate a few; the affected level/time becomes a gap.
+                        missing.append(url)
+                        if len(missing) > allowed:
+                            raise RunIncomplete(f"{len(missing)} files missing, e.g. {url}")
+                        vals, units = [None] * len(indices), ""
+                    results[(h, role, lv)] = (vals, units)
+                    total_bytes += size
+                    done += 1
+                    if progress and (done % 50 == 0 or done == len(futs)):
+                        progress(done, len(futs))
+            except BaseException:
+                # Don't sit through hundreds of queued downloads before giving up.
+                ex.shutdown(wait=True, cancel_futures=True)
+                raise
         log.info("%s %s: %d files (%d missing), %.0f MB in %.0fs", key, run_id(init), len(files),
                  len(missing), total_bytes / 1e6, time.time() - t0)
         for u in missing[:10]:

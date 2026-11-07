@@ -1,7 +1,7 @@
 """Service posting policy (no network, Discord disabled)."""
 import sys
 import types
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -221,3 +221,23 @@ def test_snow_chart_dispatch(svc_factory, monkeypatch):
     svc.maybe_post(chart, set(), datetime(2026, 11, 10, 6, tzinfo=UTC))
     assert svc.store.chart_state(chart.id)["signature"] == "hrdps:20261110T00Z"
     assert "**Updated:**" in posted["desc"] and "Blend of 2 runs" in posted["desc"]
+
+
+# --------------------------------------------------------------------------- datamart congestion
+def test_datamart_busy_is_retried_quietly(svc_factory, monkeypatch):
+    from skiforecast.datamart import DatamartBusy
+    svc = svc_factory()
+    svc.needs = {"hrdps": object()}
+    init = datetime(2026, 11, 7, 12, tzinfo=UTC)
+    tried = []
+    monkeypatch.setattr(svc.dm, "candidate_runs", lambda m, now: [init, init - timedelta(hours=6)])
+
+    def busy(m, needs, i):
+        tried.append(i)
+        raise DatamartBusy("dd.weather.gc.ca: Read timed out.")
+    monkeypatch.setattr(svc.dm, "check_complete", busy)
+    alerts = []
+    monkeypatch.setattr(svc, "alert", lambda *a, **k: alerts.append(a))
+    assert svc.update_model("hrdps", init + timedelta(hours=4)) is False
+    assert tried == [init]          # doesn't fall back to downloading an older run
+    assert not alerts

@@ -182,3 +182,68 @@ def test_recent_runs(tmp_path):
     assert [r["run"] for r in st.recent_runs("hrdps", 2)] == ["20261106T06Z", "20261106T00Z"]
     assert st.latest_run("hrdps")["run"] == "20261106T06Z"
     assert st.recent_runs("gdps", 3) == []
+
+
+# --------------------------------------------------------------------------- http retries
+class _FakeResp:
+    def __init__(self, status=200, chunks=(b"abc", b"def"), fail_after=None):
+        self.status_code = status
+        self._chunks = chunks
+        self._fail_after = fail_after
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+            raise requests.HTTPError(f"{self.status_code}", response=self)
+
+    def iter_content(self, n):
+        import requests
+        for i, c in enumerate(self._chunks):
+            if self._fail_after is not None and i >= self._fail_after:
+                raise requests.ConnectionError("Read timed out.")
+            yield c
+
+
+def _http(monkeypatch, responses, retries=3):
+    from skiforecast import datamart
+    monkeypatch.setattr(datamart.time, "sleep", lambda s: None)
+    http = datamart.Http("test", 1, retries)
+    calls = iter(responses)
+    http.s.get = lambda url, **kw: next(calls)
+    return http
+
+
+def test_download_retries_read_timeout_mid_body(tmp_path, monkeypatch):
+    http = _http(monkeypatch, [_FakeResp(fail_after=1), _FakeResp()])
+    out = tmp_path / "f.grib2"
+    assert http.download("u", str(out)) == 6
+    assert out.read_bytes() == b"abcdef"   # restarted, not appended to the partial file
+
+
+def test_download_gives_up_as_busy(tmp_path, monkeypatch):
+    import pytest
+    from skiforecast.datamart import DatamartBusy
+    http = _http(monkeypatch, [_FakeResp(fail_after=0)] * 3, retries=2)
+    with pytest.raises(DatamartBusy):
+        http.download("u", str(tmp_path / "f"))
+
+
+def test_download_404_and_5xx(tmp_path, monkeypatch):
+    http = _http(monkeypatch, [_FakeResp(status=404)])
+    assert http.download("u", str(tmp_path / "f")) is None
+    http = _http(monkeypatch, [_FakeResp(status=503), _FakeResp()])
+    assert http.download("u", str(tmp_path / "f")) == 6
+
+
+def test_download_does_not_retry_4xx(tmp_path, monkeypatch):
+    import pytest
+    import requests
+    http = _http(monkeypatch, [_FakeResp(status=403), _FakeResp()])
+    with pytest.raises(requests.HTTPError):
+        http.download("u", str(tmp_path / "f"))

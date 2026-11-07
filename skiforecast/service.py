@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from .assemble import build_chart_data
 from .chart import format_zulu_local, render_chart
 from .config import AppConfig, ChartBase, SnowChartConfig
-from .datamart import Datamart, RunIncomplete, compute_needs, parse_run_id, run_id
+from .datamart import Datamart, DatamartBusy, RunIncomplete, compute_needs, parse_run_id, run_id
 from .discord import Discord
 from .store import Store
 
@@ -79,18 +79,23 @@ class Service:
         for init in self.dm.candidate_runs(m, now):
             if latest_init and (init < latest_init or (init == latest_init and latest_ok)):
                 break
-            levels = self.dm.check_complete(m, needs, init)
-            if levels is None:
-                log.debug("%s %s not complete yet", key, run_id(init))
-                continue
-            log.info("%s: new run %s, processing", key, run_id(init))
             try:
+                levels = self.dm.check_complete(m, needs, init)
+                if levels is None:
+                    log.debug("%s %s not complete yet", key, run_id(init))
+                    continue
+                log.info("%s: new run %s, processing", key, run_id(init))
                 data = self.dm.process_run(key, needs, init, levels,
                                            progress=lambda d, t: (self.store.beat(),
                                                                   log.info("%s %s: %d/%d files", key, run_id(init), d, t)))
             except RunIncomplete as e:
                 log.info("%s %s: %s; will retry", key, run_id(init), e)
                 continue
+            except DatamartBusy as e:
+                # Transient congestion (typically right after a run is published).
+                # Retry this run next poll; a lasting outage still trips the stale alert.
+                log.warning("%s %s: Datamart busy, will retry next poll (%s)", key, run_id(init), e)
+                return False
             self.store.save_run(key, data, self.cfg.general.keep_runs)
             ms.update(last_run=data["run"], processed_at=data["processed_at"], last_bytes=data["bytes"])
             self.store.save_state()
