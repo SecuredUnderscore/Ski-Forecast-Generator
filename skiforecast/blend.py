@@ -312,10 +312,16 @@ def build_snow_chart_data(cfg: AppConfig, chart: SnowChartConfig, runs: dict[str
     now = now or datetime.now(UTC)
     tz = cfg.general.timezone
     b = chart.blend
-    start = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=chart.history_hours)
-    end = start + timedelta(hours=chart.hours + chart.history_hours)
     runs = {m: [r for r in (lst or []) if r] for m, lst in (runs or {}).items()}
     latest = {m: lst[0] for m, lst in runs.items() if lst}
+    start = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=chart.history_hours)
+    end = start + timedelta(hours=chart.hours + chart.history_hours)
+    if chart.start_at_run:
+        # the chart covers the first available source's run from its start (12Z run -> 12Z to 12Z + hours)
+        first = next((latest[s.model] for s in chart.sources if s.model in latest), None)
+        if first is not None:
+            start = parse_run_id(first["run"])
+            end = start + timedelta(hours=chart.hours)
 
     windows = plan_windows(cfg, chart.sources, latest, "precip", start, end)
     origin = period_origin(cfg, chart.sources, start, tz, chart.total_start_hour_local, chart.style.tick_hour_utc)

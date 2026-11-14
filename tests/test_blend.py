@@ -194,3 +194,14 @@ def test_hand_over_to_gdps(tmp_path):
     assert len(d.sources) == 2 and "; GDPS 1 run" in d.recipe
     bars = d.panels[0].bars
     assert all(a.end == b.start for a, b in zip(bars, bars[1:]))
+
+
+def test_start_at_run(tmp_path):
+    cfg = make_cfg(tmp_path)
+    chart = _chart(cfg)
+    d = build_snow_chart_data(cfg, chart, {"hrdps": [_hrdps()]}, NOW)      # run 06 00Z, now 06 04:30Z
+    assert d.start == datetime(2026, 11, 6, 0, tzinfo=UTC)
+    assert d.end == datetime(2026, 11, 8, 0, tzinfo=UTC)                   # run start + hours
+    chart.start_at_run = False
+    d = build_snow_chart_data(cfg, chart, {"hrdps": [_hrdps()]}, NOW)
+    assert d.start == datetime(2026, 11, 6, 4, tzinfo=UTC)                 # now, floored to the hour

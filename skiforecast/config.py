@@ -268,6 +268,8 @@ class SnowChartConfig(ChartBase):
     bar_hours: int = Field(3, ge=1, le=24)
     total_hours: int = Field(24, ge=1, le=72)
     total_start_hour_local: Optional[int] = Field(None, ge=0, le=23)   # None = style.tick_hour_utc, else local midnight
+    start_at_run: bool = True                   # chart runs from the first source's run start (a 12Z run -> 12Z to
+                                                # 12Z + hours); False = from now - history_hours like the meteogram
     blend: BlendConfig = BlendConfig()
     style: SnowStyleConfig = SnowStyleConfig()
 

@@ -112,7 +112,7 @@ When `times` is set, model updates never trigger a post on their own. If the ser
 A second chart type (`type: blended_snow`) that answers "how much snow, and how sure is that?" for a few elevations at one point:
 
 - A top panel with the snow level (wet-bulb 0 °C height minus an offset) and its spread, with your elevations marked.
-- One panel per elevation (highest first) with a snow bar (cm) and a rain bar (mm) for every `bar_hours` slot. Each bar prints its central value; the whisker is the spread (10th to 90th percentile). Hatched bars mean the phase could go either way. Boxed daily totals read `centre (low–high)`.
+- One panel per elevation (highest first) with a snow bar (cm) and a rain bar (mm) for every `bar_hours` slot. Each bar prints its central value; the whisker is the spread (10th to 90th percentile). Hatched bars mean the phase could go either way. Daily totals sit at the end of their period as a narrow stack: snow total over its `low–high` range, then rain total over its range, without units (the legend has them). A dashed box is a period the chart does not fully cover.
 
 ```yaml
 - id: snow_2day
@@ -132,7 +132,7 @@ A second chart type (`type: blended_snow`) that answers "how much snow, and how 
   post: { models: [hrdps] }
 ```
 
-`sources` is one chain used for both the profile and the precipitation. `elevations` takes 1–5 entries, as numbers or `{elevation, label}`. `bar_hours`, `total_hours`, `total_start_hour_local`, `hours`, `history_hours`, `trim_to_data`, `post` and the `style` keys `tick_hour_utc` / `min_ticks_per_day` work like the meteogram's. `style.show_bar_ranges: true` also prints `low–high` under every bar value. Thin lines separate the slots so each snow/rain pair reads as one (`style.show_slot_separators`, `style.slot_separator_color`).
+`sources` is one chain used for both the profile and the precipitation. `elevations` takes 1–5 entries, as numbers or `{elevation, label}`. `bar_hours`, `total_hours`, `total_start_hour_local`, `hours`, `trim_to_data`, `post` and the `style` keys `tick_hour_utc` / `min_ticks_per_day` work like the meteogram's. The chart starts at the first source's run time (a 12Z HRDPS run gives 12Z to 12Z two days later); set `start_at_run: false` to start at now minus `history_hours` like the meteogram. `style.show_bar_ranges: true` also prints `low–high` under every bar value. Thin lines separate the slots so each snow/rain pair reads as one (`style.show_slot_separators`, `style.slot_separator_color`).
 
 **How the numbers are made.** For each elevation and time slot the model's temperature, dewpoint and (optionally) wind profiles are interpolated to that height:
 

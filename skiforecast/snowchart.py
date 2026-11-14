@@ -227,11 +227,10 @@ def _draw_elevation_panel(ax, axr, panel, data, x0, x1):
         draw(axr, bx + 0.52 * bw, 0.44 * bw, _num(b.rain_mm), _num(b.rain_lo), _num(b.rain_hi),
              st.rain_color, st.rain_text_color, b.mixed, st.show_bar_ranges)
 
-    # totals
+    # totals: a narrow stack at the end of each period (units are in the legend):
+    # snow total / snow range, then rain total / rain range.  Dashed = incomplete period.
     for tot in panel.totals:
-        # drawn at the end of its period, like the meteogram (a period running past the
-        # chart sits right-aligned on the right edge)
-        cx = min(mdates.date2num(tot.end), x1)
+        cx = min(mdates.date2num(tot.end), x1)   # a period running past the chart sits on the right edge
         if not (x0 <= cx <= x1):
             continue
         ha = "right" if cx >= x1 else "center"
@@ -240,17 +239,18 @@ def _draw_elevation_panel(ax, axr, panel, data, x0, x1):
         rc, rlo, rhi = _num(tot.rain_mm), _num(tot.rain_lo), _num(tot.rain_hi)
         show_snow = (math.isfinite(sc) and sc >= 0.5) or (math.isfinite(shi) and shi >= 1)
         show_rain = (math.isfinite(rc) and rc >= 1) or (math.isfinite(rhi) and rhi >= 2)
-        if show_snow:
-            ax.text(cx, 0.90, f"{_whole(sc)} cm ({_whole(slo)}–{_whole(shi)})", transform=ax.get_xaxis_transform(),
-                    ha=ha, va="center", fontsize=9.5, fontweight="bold", color=st.snow_text_color, zorder=7,
-                    bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.9, edgecolor=st.snow_text_color,
-                              linestyle=ls, linewidth=1.1))
-        if show_rain:   # a dry period shows no box at all; rain alone takes the top slot
-            ax.text(cx, 0.72 if show_snow else 0.90, f"{_whole(rc)} mm ({_whole(rlo)}–{_whole(rhi)})",
-                    transform=ax.get_xaxis_transform(), ha=ha, va="center", fontsize=9,
-                    fontweight="bold", color=st.rain_text_color, zorder=7,
-                    bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.9,
-                              edgecolor=st.rain_text_color, linestyle=ls, linewidth=1.1))
+        dy = -4.0
+        for show, c, lo, hi, color in ((show_snow, sc, slo, shi, st.snow_text_color),
+                                       (show_rain, rc, rlo, rhi, st.rain_text_color)):
+            if not show:   # a dry period shows nothing; rain alone takes the top slot
+                continue
+            ax.annotate(f"$\\bf{{{_whole(c)}}}$\n{_whole(lo)}–{_whole(hi)}", (cx, 1.0),
+                        xycoords=ax.get_xaxis_transform(), xytext=(0, dy), textcoords="offset points",
+                        ha=ha, va="top", fontsize=8.5, color=color, linespacing=1.1, zorder=7,
+                        annotation_clip=False,
+                        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.9, edgecolor=color,
+                                  linestyle=ls, linewidth=1.1))
+            dy -= 33.0   # two lines + box padding + a small gap
 
     # axes
     ax.yaxis.set_major_locator(matplotlib.ticker.MultipleLocator(_nice_step(smax)))
@@ -266,16 +266,19 @@ def _draw_elevation_panel(ax, axr, panel, data, x0, x1):
     axr.spines["right"].set_color(st.rain_text_color)
     ax.set_ylabel("cm\nsnow", color=st.snow_text_color, fontsize=9.5, fontweight="bold", rotation=0,
                   ha="right", va="center")
-    ax.yaxis.set_label_coords(-0.045, 0.5)
+    ax.yaxis.set_label_coords(-0.045, 0.28)
     axr.set_ylabel("mm\nrain", color=st.rain_text_color, fontsize=9.5, fontweight="bold", rotation=0,
                    ha="left", va="center")
     axr.yaxis.set_label_coords(1.045, 0.5)
+    # panel name in the left margin above the unit label, so the totals never run into it
     e = _num(panel.elevation_m)
     elev = "?" if math.isnan(e) else f"{e:.0f}"
-    title = f"{panel.label} · {elev} m" if panel.label else f"{elev} m"
-    ax.text(0.006, 0.955, title, transform=ax.transAxes, ha="left", va="top", fontsize=10.5,
-            fontweight="bold", color="#222222", zorder=8,
-            bbox=dict(boxstyle="round,pad=0.2", facecolor=st.background_color, alpha=0.85, edgecolor="none"))
+    name = panel.label or ""
+    lbl = f"{name}\n{elev} m" if name else f"{elev} m"
+    longest = max(len(name), len(f"{elev} m"), 1)
+    fs = min(10.5, 0.85 * 72 / (0.62 * longest))   # shrink long names to fit the margin
+    ax.text(-0.045, 0.74, lbl, transform=ax.transAxes, ha="right", va="center", fontsize=fs,
+            fontweight="bold", color="#222222", linespacing=1.15)
 
 
 def _footer_lines(data: SnowChartData, tz: ZoneInfo) -> list[str]:

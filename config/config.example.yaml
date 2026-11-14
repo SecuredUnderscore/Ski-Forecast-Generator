@@ -140,6 +140,7 @@ charts:
       - { elevation: 675, label: Village }
     bar_hours: 3
     total_hours: 24
+    # start_at_run: false          # start at now - history_hours instead of the run start (default: run start)
     # blend:                         # defaults shown; usually nothing to change
     #   lagged_runs: 3               # recent runs of each model to blend (needs general.keep_runs >= this)
     #   neighbourhood_km: 6          # radius of grid cells around the point (0 = centre cell only)
