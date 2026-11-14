@@ -275,10 +275,15 @@ def _draw_elevation_panel(ax, axr, panel, data, x0, x1):
     elev = "?" if math.isnan(e) else f"{e:.0f}"
     name = panel.label or ""
     lbl = f"{name}\n{elev} m" if name else f"{elev} m"
-    longest = max(len(name), len(f"{elev} m"), 1)
-    fs = min(10.5, 0.85 * 72 / (0.62 * longest))   # shrink long names to fit the margin
-    ax.text(-0.045, 0.74, lbl, transform=ax.transAxes, ha="right", va="center", fontsize=fs,
-            fontweight="bold", color="#222222", linespacing=1.15)
+    t = ax.text(-0.045, 0.74, lbl, transform=ax.transAxes, ha="right", va="center", fontsize=10.5,
+                fontweight="bold", color="#222222", linespacing=1.15)
+    # shrink a long name so it stays inside the figure's left margin
+    fig = ax.figure
+    renderer = fig.canvas.get_renderer()
+    avail = t.get_window_extent(renderer).x1 - 10.0          # pixels from the figure edge to the text right edge
+    width = t.get_window_extent(renderer).width
+    if width > avail > 0:
+        t.set_fontsize(max(7.0, 10.5 * avail / width))
 
 
 def _footer_lines(data: SnowChartData, tz: ZoneInfo) -> list[str]:
